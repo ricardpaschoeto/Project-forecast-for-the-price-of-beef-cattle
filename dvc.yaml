@@ -1,0 +1,10 @@
+
+stages:
+  data_validation:
+    cmd: echo "Run Great Expectations checkpoint" && exit 0
+  feature_engineering:
+    cmd: echo "Feature engineering" && exit 0
+  model_training:
+    cmd: python ml-pipeline/train.py --experiment boi-gordo-dvc --window 30
+  model_evaluation:
+    cmd: echo "Evaluate model" && exit 0

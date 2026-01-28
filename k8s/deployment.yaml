@@ -1,0 +1,23 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boi-gordo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: boi-gordo-app
+  template:
+    metadata:
+      labels:
+        app: boi-gordo-app
+    spec:
+      containers:
+        - name: app
+          image: boi-gordo:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: MODEL_ENDPOINT
+              value: "https://sagemaker-endpoint.amazonaws.com"

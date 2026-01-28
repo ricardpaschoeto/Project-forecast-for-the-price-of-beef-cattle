@@ -1,0 +1,28 @@
+
+market:
+  - name: price_spot
+    dtype: float
+  - name: price_future
+    dtype: float
+  - name: usd_brl
+    dtype: float
+  - name: corn_price
+    dtype: float
+  - name: soy_price
+    dtype: float
+climate:
+  - name: precip
+    dtype: float
+  - name: temp_mean
+    dtype: float
+  - name: pdsi
+    dtype: float
+  - name: elnino_index
+    dtype: float
+seasonal:
+  - name: month
+    dtype: int
+  - name: quarter
+    dtype: int
+  - name: season_flag
+    dtype: int

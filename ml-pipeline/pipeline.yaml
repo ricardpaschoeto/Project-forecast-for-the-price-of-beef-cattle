@@ -1,0 +1,9 @@
+
+stages:
+  - data_validation
+  - feature_engineering
+  - model_training
+  - model_evaluation
+  - model_registration
+  - model_deployment
+  - monitoring_setup

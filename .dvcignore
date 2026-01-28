@@ -1,0 +1,5 @@
+
+# Ignore heavy raw data and temporary artifacts by default
+raw/
+intermediate/
+outputs/

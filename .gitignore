@@ -1,0 +1,31 @@
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# MLflow/DVC
+mlruns/
+mlflow.db
+.dvc/
+.cache/
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Terraform
+**/.terraform/
+*.tfstate*
+terraform.tfvars
+
+# Secrets
+.env
+config/settings.yaml
+*.docx
+*.png
+*.pdf

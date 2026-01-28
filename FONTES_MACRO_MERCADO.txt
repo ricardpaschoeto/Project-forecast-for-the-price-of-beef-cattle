@@ -1,0 +1,8 @@
+CME = https://br.investing.com/equities/cme-group-inc.-historical-data
+DOLAR = https://br.investing.com/currencies/usd-brl-historical-data
+BOI_FUTURO_DOLAR = https://br.investing.com/commodities/live-cattle-historical-data
+BOI_GORDO_NEGOCIADO = https://www.cepea.org.br/br/indicador/boi-gordo.aspx (download arquivo CEPEA_20260127141935.xls)
+MILHO_FUTURO = https://br.investing.com/commodities/us-corn-historical-data?cid=1181089
+MILHO_REAL = https://www.cepea.org.br/br/indicador/milho.aspx (download arquivo CEPEA_20260127142542.xls)
+SOJA_REAL = https://www.cepea.org.br/br/indicador/soja.aspx (download arquivo CEPEA_20260127142629.xls
+SOJA_FUTURO = https://br.investing.com/commodities/us-soybeans-historical-data?cid=964523

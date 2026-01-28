@@ -1,0 +1,10 @@
+
+name: daily_price_checkpoint
+config_version: 1
+class_name: Checkpoint
+run_name_template: '%Y-%m-%d-price-check'
+validations:
+  - expectation_suite_name: price_schema
+    batch_request:
+      datasource_name: s3_raw
+      data_asset_name: precos/diario

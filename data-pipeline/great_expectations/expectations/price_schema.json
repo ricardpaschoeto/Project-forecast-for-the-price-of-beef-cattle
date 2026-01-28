@@ -1,0 +1,9 @@
+
+{
+  "dataset": "precos_boi_gordo",
+  "columns": {
+    "date": {"type": "datetime", "required": true},
+    "price": {"type": "float", "required": true, "expect_positive": true},
+    "source": {"type": "string", "required": true}
+  }
+}

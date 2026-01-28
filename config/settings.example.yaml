@@ -1,0 +1,13 @@
+
+project: boi-gordo
+environment: dev
+aws:
+  region: us-east-1
+  s3_bucket: boi-gordo-data-dev
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  artifact_root: ./mlruns
+feature_store:
+  market_group: market-features-boi-gordo
+  climate_group: climate-features-boi-gordo
+  seasonal_group: seasonal-features-boi-gordo
