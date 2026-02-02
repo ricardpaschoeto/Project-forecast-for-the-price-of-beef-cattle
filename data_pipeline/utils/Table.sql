@@ -1,19 +1,56 @@
--- Projeto 2 - MLOps da Concepção ao Deploy - Sistema de LLM/RAG
--- SQL - Criação do Banco de Dados
-
--- Deleta o schema se já existir
--- DROP SCHEMA IF EXISTS boi_gordo CASCADE;
-
 -- Cria o schema
-CREATE SCHEMA IF NOT EXISTS boi_gordo;
+CREATE SCHEMA IF NOT EXISTS metadroiddb;
 
--- Cria as tabelas
-
-CREATE TABLE boi_gordo.data (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    idade INTEGER NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    telefone VARCHAR(20) NOT NULL,
-    cidade VARCHAR(100) NOT NULL
+CREATE TABLE metadroiddb.dados (
+    data DATE PRIMARY KEY,
+    Taxa_EUA FLOAT,
+    Taxa_EU FLOAT,
+    Taxa_china FLOAT,
+    boi_futuro FLOAT,
+    boi_real FLOAT,
+    boi_negociado FLOAT,
+    boi_dolar FLOAT,
+    soja_real FLOAT,
+    soja_dolar FLOAT,
+    soja_futuro FLOAT,
+    milho_futuro FLOAT,
+    milho_real FLOAT,
+    milho_dolar FLOAT,
+    dolar FLOAT,
+    CovidPeriodFlag INT,
+    ciclo FLOAT,
+    aspecto FLOAT,
+    ano_novo_flag INT,
+    carnaval_core_flag INT,
+    carnaval_window_flag INT,
+    pascoa_flag INT,
+    pascoa_window_flag INT,
+    dias_maes_flag INT,
+    dias_maes_weekend_flag INT,
+    festas_juninas_flag INT,
+    santo_antonio_flag INT,
+    sao_joao_flag INT,
+    sao_pedro_flag INT,
+    ferias_midyear_flag INT,
+    ferias_verao_flag INT,
+    dias_pais_flag INT,
+    dias_pais_weekend_flag INT,
+    independencia_flag INT,
+    independencia_window_flag INT,
+    dia_criancas_flag INT,
+    finados_flag INT,
+    finados_weekend_flag INT,
+    natal_flag INT,
+    natal_window_flag INT,
+    fim_ano_window_flag INT,
+    sazonal_carne_weight FLOAT,
+    scpdsi FLOAT,
+    el_nino VARCHAR(50),
+    precip_total_mm FLOAT,
+    TEMPERATURA FLOAT,
+    selic FLOAT,
+    ipca FLOAT,
+    pib_brasil FLOAT,
+    pib_agro FLOAT,
+    cme FLOAT
 );

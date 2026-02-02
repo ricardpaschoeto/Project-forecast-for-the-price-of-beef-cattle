@@ -7,7 +7,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 # Cria o motor de conexão
-engine = create_engine('postgresql+psycopg2://dsa:dsa1010@localhost:5222/metadroiddb')
+engine = create_engine("postgresql+psycopg2://postgres:metadroid1010@localhost:5432/metadroiddb")
 
 print("\nIniciando o Processo de Carga dos Dados!\n")
 
