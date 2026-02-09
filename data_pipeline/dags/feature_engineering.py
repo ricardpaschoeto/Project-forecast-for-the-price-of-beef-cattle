@@ -7,9 +7,6 @@ import pandas as pd
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer, make_column_selector as selector
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from sklearn.datasets import make_regression
@@ -102,20 +99,6 @@ class RollingStats(BaseEstimator, TransformerMixin):
             X[f"{self.target_col}_max_{w}"]  = roll["max"].shift(1)
         return X
 
-class CleanFeatures():
-
-    def __init__(self, df, nan_cols: List[str], drop_cols: List[str]):
-        self.df = df
-        self.nan_cols = nan_cols
-        self.drop_cols = drop_cols
-
-    def nan_value(self, type: str = None):
-
-        for col in self.nan_cols:
-            if type == 'interpolate_1d':
-                self.df[col + 'id_interpolate'] = self.df[col].interpolate(method='linear')
-
-
 class FeatureSelection():
     def __init__(self, df: pd.DataFrame, target_col: str):
         self.df = df
@@ -181,6 +164,7 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
           {'df': sazonal_df, 'on': ['Date']},
           {'df': tarifas_df, 'on': ['Date']}
         ]
+    feature_selection= True,
     model_params: Dict[str, Any]
         Parâmetros do HistGradientBoostingRegressor (opcional).
     imputer_num_strategy: str
@@ -202,19 +186,21 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
     """
     date_col: str      = conf["date_col"]
     target_col: str    = conf["target_col"]
-    cat_cols: List[str] = conf.get("categorical_cols", [])
-    base_num_cols: List[str] = conf.get("numeric_cols", [])
+    #cat_cols: List[str] = conf.get("categorical_cols", [])
+    #base_num_cols: List[str] = conf.get("numeric_cols", [])
     lags = conf.get("lags", (1, 7, 28))
     rolling_windows: List[int] = conf.get("rolling_windows", [7, 14, 28])
+    exogenous = List[Dict] = conf.get("df", ),
     model_params = conf.get("model_params", {})
-    imputer_num_strategy = conf.get("imputer_num_strategy", "median")
-    scale_numeric = conf.get("scale_numeric", True)
+    #imputer_num_strategy = conf.get("imputer_num_strategy", "median")
+    #scale_numeric = conf.get("scale_numeric", True)
 
     # 2.1) Bloco de engenharia de features "determinísticos"
     fe_steps = [
         ("time", TimeFeaturesTransformer(date_col=date_col)),
         ("lags", LagFeatures(target_col=target_col, lags=lags, date_col=date_col)),
         ("rolling", RollingStats(target_col=target_col, windows=rolling_windows, date_col=date_col)),
+        ("fe_selection", FeatureSelection()),
     ]
     fe_pipe = Pipeline(steps=fe_steps)
 
@@ -223,25 +209,25 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
     # Após a etapa de FE, teremos novos numéricos (lags/rolling/month_sin/cos), então
     # usamos um ColumnTransformer com seletores combinados.
 
-    numeric_transformers = [("imputer", SimpleImputer(strategy=imputer_num_strategy))]
-    if scale_numeric:
-        numeric_transformers.append(("scaler", StandardScaler()))
-    num_pipeline = Pipeline(steps=numeric_transformers)
+    # numeric_transformers = [("imputer", SimpleImputer(strategy=imputer_num_strategy))]
+    # if scale_numeric:
+    #     numeric_transformers.append(("scaler", StandardScaler()))
+    # num_pipeline = Pipeline(steps=numeric_transformers)
 
-    cat_pipeline = Pipeline(steps=[
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-    ])
+    # cat_pipeline = Pipeline(steps=[
+    #     ("imputer", SimpleImputer(strategy="most_frequent")),
+    #     ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    # ])
 
-    pre = ColumnTransformer(
-        transformers=[
-            # numéricos dinâmicos por dtype + garantimos base_num_cols
-            ("num", num_pipeline, selector(dtype_include=np.number)),
-            ("cat", cat_pipeline, cat_cols),
-        ],
-        remainder="drop",
-        verbose_feature_names_out=False,
-    )
+    # pre = ColumnTransformer(
+    #     transformers=[
+    #         # numéricos dinâmicos por dtype + garantimos base_num_cols
+    #         ("num", num_pipeline, selector(dtype_include=np.number)),
+    #         ("cat", cat_pipeline, cat_cols),
+    #     ],
+    #     remainder="drop",
+    #     verbose_feature_names_out=False,
+    # )
 
     # 2.3) Modelo (padrão: HistGradientBoostingRegressor)
     model = HistGradientBoostingRegressor(**model_params)
@@ -249,7 +235,7 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
     # 2.4) Pipeline final
     pipe = Pipeline(steps=[
         ("fe", fe_pipe),     # engenharia de features
-        ("pre", pre),        # pré-processamento (imput/scaler/one-hot)
+        #("pre", pre),        # pré-processamento (imput/scaler/one-hot)
         ("model", model),    # regressão
     ])
 
@@ -264,14 +250,15 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
 class ExampleConfig:
     date_col: str = "Date"
     target_col: str = "demand_kg"
-    categorical_cols: List[str] = None
-    numeric_cols: List[str] = None
+    #categorical_cols: List[str] = None
+    #numeric_cols: List[str] = None
     lags: tuple = (1, 7, 28)
     rolling_windows: List[int] = None
     exogenous: List[Dict[str, Any]] = None
     model_params: Dict[str, Any] = None
-    imputer_num_strategy: str = "median"
-    scale_numeric: bool = True
+    feature_selection=True,
+    #imputer_num_strategy: str = "median"
+    #scale_numeric: bool = True
 
 
 def example_build():
@@ -284,8 +271,8 @@ def example_build():
     conf = dict(
         date_col="Date",
         target_col="demand_kg",
-        categorical_cols=["regiao", "canal"],     # se existirem
-        numeric_cols=["preco_kg", "temp_media"],  # se existirem no seu X
+        #categorical_cols=["regiao", "canal"],     # se existirem
+        #numeric_cols=["preco_kg", "temp_media"],  # se existirem no seu X
         lags=(1, 7, 14, 28),
         rolling_windows=[7, 14, 28],
         exogenous=[
@@ -293,8 +280,8 @@ def example_build():
             {"df": tarifas_df, "on": ["Date"]},
         ],
         model_params={"max_depth": 6, "learning_rate": 0.08, "max_iter": 500},
-        imputer_num_strategy="median",
-        scale_numeric=True,
+        #imputer_num_strategy="median",
+        #scale_numeric=True,
     )
 
     pipe = make_pipeline(conf)

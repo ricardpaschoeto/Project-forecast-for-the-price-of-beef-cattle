@@ -6,6 +6,9 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import joblib
+import os
+
 from pmdarima.arima import auto_arima
 from scipy.stats import shapiro
 from sklearn.preprocessing import MinMaxScaler, PowerTransformer
@@ -83,7 +86,7 @@ def _fit_auto_arima(series: pd.Series, stationary_hint: Optional[bool], cfg: Pip
         return None
 
 
-def _normality_transform(series: pd.Series, scaler: MinMaxScaler, shapiro_alpha: float) -> Tuple[np.ndarray, Optional[float], Optional[bool], str, Tuple[str, ...]]:
+def _normality_transform(isTrain: bool, series: pd.Series, scaler: MinMaxScaler, pt: PowerTransformer, shapiro_alpha: float) -> Tuple[np.ndarray, Optional[float], Optional[bool], str, Tuple[str, ...]]:
     """
     Aplica MinMax direto se resíduos forem normais; caso contrário Yeo-Johnson + MinMax.
     Retorna (valores_transformados, p_shapiro, normal, nome_transformer, erros).
@@ -112,13 +115,28 @@ def _normality_transform(series: pd.Series, scaler: MinMaxScaler, shapiro_alpha:
 
     try:
         if is_normal:
-            transformed = scaler.fit_transform(values.reshape(-1, 1))
+            if isTrain:
+                transformed = scaler.fit_transform(values.reshape(-1, 1))
+            else:
+                transformed = scaler.transform(values.reshape(-1, 1))
+
             transformer_name = "minmax"
         else:
-            pt = PowerTransformer(method="yeo-johnson")
-            transformed_serie = pt.fit_transform(values.reshape(-1, 1))
-            transformed = scaler.fit_transform(transformed_serie)
+            if isTrain:
+                transformed_serie = pt.fit_transform(values.reshape(-1, 1))
+                transformed = scaler.fit_transform(transformed_serie)
+            else:
+                transformed_serie = pt.transform(values.reshape(-1, 1))
+                transformed = scaler.transform(transformed_serie)
+
             transformer_name = "yeo-johnson+minmax"
+
+            if not os.path.exists('power_transformer.joblib'):
+                joblib.dump(pt, 'power_transformer.joblib')
+        
+        if not os.path.exists('scaler.joblib'):
+            joblib.dump(scaler, 'scaler.joblib')
+
     except Exception as e:
         errors.append(f"transform_error:{e}")
         warnings.warn(f"Falha na transformação: {e}")
@@ -166,6 +184,7 @@ def _make_stationary(
 # =========================
 
 def normalize_time_series(
+    isTrain: bool,
     df: pd.DataFrame,
     cols: Iterable[str],
     config: Optional[PipelineConfig] = None
@@ -183,6 +202,7 @@ def normalize_time_series(
     """
     cfg = config or PipelineConfig()
     scaler = MinMaxScaler(feature_range=cfg.scaler_range)
+    pt = PowerTransformer(method="yeo-johnson")
     df_out = df.copy()
     reports: Dict[str, NormalizationReport] = {}
 
@@ -207,7 +227,10 @@ def normalize_time_series(
             warnings.warn(f"Coluna '{col}' é constante; será apenas escalonada para o valor único.")
             unique_val = series.iloc[0] if len(series) > 0 else 0.0
             try:
-                transformed = scaler.fit_transform(np.full((series.shape[0], 1), unique_val))
+                if isTrain:
+                    transformed = scaler.fit_transform(np.full((series.shape[0], 1), unique_val))
+                else:
+                    transformed = scaler.transform(np.full((series.shape[0], 1), unique_val))
             except Exception as e:
                 errors.append(f"scaler_const_error:{e}")
                 transformed = np.full((series.shape[0], 1), np.nan)
@@ -232,7 +255,7 @@ def normalize_time_series(
             errors.append("arima_fit_failed")
 
         # Normalização/transformação
-        transformed, p_shapiro, is_normal, transformer_name, err = _normality_transform(stationary_series, scaler, cfg.shapiro_alpha)
+        transformed, p_shapiro, is_normal, transformer_name, err = _normality_transform(isTrain, stationary_series, scaler, pt, cfg.shapiro_alpha)
         errors.extend(list(err))
 
         # Atribui coluna transformada com sufixo para preservar original
@@ -259,16 +282,14 @@ def normalize_time_series(
 # Execução direta (exemplo)
 # =========================
 
-def _example_usage():
+# def _usage():
     # Exemplo de uso: carregue seu CSV e selecione colunas
     # df = pd.read_csv("seu_arquivo.csv")
-    # cols = ["coluna_y", "coluna_x1", "coluna_x2"]
+    # cols = df.columns.to_list()
     # df_norm, report = normalize_time_series(df, cols)
-    # print(df_norm.head())
+    # print(df_norm.tail())
     # print({k: asdict(v) for k, v in report.items()})
-    pass
 
-
-if __name__ == "__main__":
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    _example_usage()
+# if __name__ == "__main__":
+#     warnings.filterwarnings("ignore", category=FutureWarning)
+#     _usage()

@@ -8,12 +8,12 @@ CREATE TABLE boi_gordo.data (
 );
 adapte para criar as colunas abaixo:
 
-data                          Datetime
+data                         Datetime
 Taxa_EUA                     float64
 Taxa_EU                      float64
 Taxa_china                   float64
 boi_futuro                   float64
-boi_real                     float64
+boi_negociado                float64
 boi_dolar                    float64
 soja_real                    float64
 soja_dolar                   float64
