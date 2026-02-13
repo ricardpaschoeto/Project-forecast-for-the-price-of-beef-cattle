@@ -31,4 +31,6 @@ config/settings.yaml
 *.pdf
 *.txt
 
-"notebooks/Climaticas/*.zip" 
+"notebooks/*.csv"
+"notebooks/*.ipynb"
+

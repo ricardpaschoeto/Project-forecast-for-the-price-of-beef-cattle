@@ -132,7 +132,7 @@ class DataCleanPipeline:
     def read(self) -> pd.DataFrame:
         """Lê o CSV de entrada."""
         logger.info('Lendo dados: %s', self.config.input_path)
-        return pd.read_csv(self.config.input_path)
+        return pd.read_csv(self.config.input_path, index_col=0)
 
     def save(self, df: pd.DataFrame) -> None:
         """Salva o DataFrame no CSV de saída."""
@@ -297,18 +297,19 @@ class DataCleanPipeline:
 
 def _default_paths() -> tuple[str, str]:
     """Mantém a convenção de caminhos relativos ao diretório do script."""
-    actual_dir = os.path.dirname(os.path.abspath(__file__))
-    input_path = os.path.join(actual_dir, 'dados_agro_atualizado.csv')
-    output_path = os.path.join(actual_dir, 'dados_limpos.csv')
+    actual_dir = os.path.dirname(os.path.dirname(__file__))
+    input_path = os.path.join(actual_dir, 'sensors', 'dados_agro_atualizado.csv')
+    output_path = os.path.join(actual_dir, 'sensors','dados_limpos.csv')
     return input_path, output_path
 
 
-def clean_pipeline() -> pd.DataFrame:
+def clean() -> pd.DataFrame:
     """Função de compatibilidade com a versão anterior."""
     input_path, output_path = _default_paths()
     pipeline = DataCleanPipeline(input_path=input_path, output_path=output_path)
     return pipeline.run()
 
 
-if __name__ == '__main__':
-    clean_pipeline()
+# 
+# if __name__ == '__main__':
+#    clean()
