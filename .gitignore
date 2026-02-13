@@ -29,3 +29,5 @@ config/settings.yaml
 *.docx
 *.png
 *.pdf
+*.txt
+
