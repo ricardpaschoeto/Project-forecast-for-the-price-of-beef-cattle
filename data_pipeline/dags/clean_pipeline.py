@@ -126,6 +126,9 @@ class DataCleanPipeline:
             # Se config for passado, ele manda.
             self.config = config
 
+    def fit(self, X: pd.DataFrame, y=None):
+        return self
+
     # ---------------------------------------------------------------------
     # IO
     # ---------------------------------------------------------------------
