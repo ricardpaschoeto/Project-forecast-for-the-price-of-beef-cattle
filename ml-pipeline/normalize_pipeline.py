@@ -18,8 +18,8 @@ from pathlib import Path
 
 caminho = Path(os.path.abspath(__file__))
 root_dir = caminho.parent.parent
-transformer_dir = os.path.join(root_dir,'operators', 'power_transformer.joblib')
-scale_dir = os.path.join(root_dir,'operators', 'scaler.joblib')
+# transformer_dir = os.path.join(root_dir,'operators', 'power_transformer.joblib')
+# scale_dir = os.path.join(root_dir,'operators', 'scaler.joblib')
 
 # =========================
 # Configurações e dataclasses
@@ -40,21 +40,39 @@ class NormalizationReport:
     errors: Tuple[str, ...]
 
 
+
 @dataclass
 class PipelineConfig:
     scaler_range: Tuple[float, float] = (0.0, 1.0)
     adf_alpha: float = 0.05
     max_diff_order: int = 6
-    seasonal: bool = True
-    seasonal_period: int = 1  # m
-    stepwise: bool = True
-    shapiro_alpha: float = 0.05
     interpolate: bool = True  # preencher após diffs
     interpolation_method: str = "linear"
+    shapiro_alpha: float = 0.05
+    shapiro_sample_cap: int = 5000  # amostra para o teste se a série for muito grande
 
 
 # =========================
-# Utilitários
+# Paths utilitários
+# =========================
+
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+def _col_artifact_paths(artifact_dir: Path, col: str) -> Tuple[Path, Path, Path]:
+
+    """
+    Retorna caminhos para (pt.joblib, scaler.joblib, meta.json) por coluna.
+    """
+    pt_path = artifact_dir / f"{col}_pt.joblib"
+    scaler_path = artifact_dir / f"{col}_scaler.joblib"
+    meta_path = artifact_dir / f"{col}_meta.json"
+
+    return pt_path, scaler_path, meta_path
+
+
+# =========================
+# Testes e transformações básicas
 # =========================
 
 def _is_constant(series: pd.Series) -> bool:
@@ -70,6 +88,56 @@ def _safe_adfuller(series: pd.Series) -> Optional[float]:
         warnings.warn(f"ADF falhou: {e}")
         return None
 
+def _make_stationary_train(
+    series: pd.Series,
+    cfg: PipelineConfig
+) -> Tuple[pd.Series, int, Optional[float], Optional[bool]]:
+    """
+    Tenta tornar a série estacionária via differencing incremental.
+    Retorna (serie_stationary, ordem_diff_aplicada, p_final, flag_estacionaria).
+    """
+    p_initial = _safe_adfuller(series)
+    stationary_initial = (p_initial is not None) and (p_initial <= cfg.adf_alpha)
+
+    if stationary_initial:
+        return series, 0, p_initial, True
+
+    # Diferenciação incremental
+    s = series.copy()
+    for d in range(1, cfg.max_diff_order + 1):
+        s = s.diff(1)  # aplica diferença de ordem 1 a cada passo
+        if cfg.interpolate:
+            try:
+                s = s.interpolate(method=cfg.interpolation_method, 
+                                  limit_direction="both")
+            except Exception as e:
+                warnings.warn(f"Interpolação falhou (d={d}): {e}")
+
+        p = _safe_adfuller(s)
+        if p is not None and p <= cfg.adf_alpha:
+            return s, d, p, True
+
+    # Não estacionária mesmo após máximo de diferenças
+    p_final = _safe_adfuller(s)
+    is_stat = (p_final is not None) and (p_final <= cfg.adf_alpha)
+    return s, cfg.max_diff_order, p_final, is_stat
+
+
+def _difference_with_history(
+    train_tail_original: Optional[pd.Series],
+    test_series: pd.Series,
+    d: int,
+    cfg: PipelineConfig
+) -> pd.Series:
+    """
+    Aplica differencing de ordem d no TESTE usando a "history" do TREINO como contexto.
+    Necessário para evitar leakage e manter consistência.
+
+    - Para d=0: retorna test_series tal qual.
+    - Para d>0: concatena os últimos d valores originais do treino com o teste e aplica
+      diff(1) repetidamente d vezes; depois descarta a parte "history" e mantém apenas o teste.
+    """
+    # TODO
 
 def _fit_auto_arima(series: pd.Series, stationary_hint: Optional[bool], cfg: PipelineConfig):
     """Treina ARIMA e retorna resíduos, ou None se falhar."""
@@ -92,7 +160,12 @@ def _fit_auto_arima(series: pd.Series, stationary_hint: Optional[bool], cfg: Pip
         return None
 
 
-def _normality_transform(isTrain: bool, series: pd.Series, scaler: MinMaxScaler, pt: PowerTransformer, shapiro_alpha: float) -> Tuple[np.ndarray, Optional[float], Optional[bool], str, Tuple[str, ...]]:
+def _normality_transform(col: str,
+                         isTrain: bool, 
+                         series: pd.Series, 
+                         scaler: MinMaxScaler, 
+                         pt: PowerTransformer, 
+                         shapiro_alpha: float) -> Tuple[np.ndarray, Optional[float], Optional[bool], str, Tuple[str, ...]]:
     """
     Aplica MinMax direto se resíduos forem normais; caso contrário Yeo-Johnson + MinMax.
     Retorna (valores_transformados, p_shapiro, normal, nome_transformer, erros).
@@ -120,10 +193,17 @@ def _normality_transform(isTrain: bool, series: pd.Series, scaler: MinMaxScaler,
     is_normal = (p_shapiro is not None) and (p_shapiro > shapiro_alpha)
 
     try:
+        col_pt_path = Path(root_dir, "operators", f"{col}_pt.joblib")
+        col_scaler_path = Path(root_dir, "operators", f"{col}_scaler.joblib")
+
         if is_normal:
             if isTrain:
                 transformed = scaler.fit_transform(values.reshape(-1, 1))
+                joblib.dump(pt, col_pt_path)
+                joblib.dump(scaler, col_scaler_path)
             else:
+                pt = joblib.load(col_pt_path)
+                scaler = joblib.load(col_scaler_path)
                 transformed = scaler.transform(values.reshape(-1, 1))
 
             transformer_name = "minmax"
@@ -137,11 +217,6 @@ def _normality_transform(isTrain: bool, series: pd.Series, scaler: MinMaxScaler,
 
             transformer_name = "yeo-johnson+minmax"
 
-            if not os.path.exists(transformer_dir):
-                joblib.dump(pt, transformer_dir)
-        
-        if not os.path.exists(scale_dir):
-            joblib.dump(scaler, scale_dir)
 
     except Exception as e:
         errors.append(f"transform_error:{e}")
@@ -152,37 +227,6 @@ def _normality_transform(isTrain: bool, series: pd.Series, scaler: MinMaxScaler,
     return transformed, p_shapiro, is_normal, transformer_name, tuple(errors)
 
 
-def _make_stationary(
-    series: pd.Series,
-    cfg: PipelineConfig
-) -> Tuple[pd.Series, int, Optional[float], Optional[bool]]:
-    """
-    Tenta tornar a série estacionária via differencing incremental.
-    Retorna (serie_stationary, ordem_diff_aplicada, p_final, flag_estacionaria).
-    """
-    p_initial = _safe_adfuller(series)
-    stationary_initial = (p_initial is not None) and (p_initial <= cfg.adf_alpha)
-
-    if stationary_initial:
-        return series, 0, p_initial, True
-
-    # Diferenciação incremental
-    s = series.copy()
-    for d in range(1, cfg.max_diff_order + 1):
-        s = s.diff(1)  # aplica diferença de ordem 1 a cada passo
-        if cfg.interpolate:
-            try:
-                s = s.interpolate(method=cfg.interpolation_method, limit_direction="both")
-            except Exception as e:
-                warnings.warn(f"Interpolação falhou (d={d}): {e}")
-
-        p = _safe_adfuller(s)
-        if p is not None and p <= cfg.adf_alpha:
-            return s, d, p, True
-
-    # Não estacionária mesmo após máximo de diferenças
-    p_final = _safe_adfuller(s)
-    return s, cfg.max_diff_order, p_final, (p_final is not None and p_final <= cfg.adf_alpha)
 
 
 # =========================

@@ -1,31 +1,51 @@
 from clean_pipeline import clean
 from normalize_pipeline import normalize_time_series
+from feature_engineering import TimeFeaturesTransformer, FeatureSelection
+import logging
+
+import pandas as pd
 
 import os
 from pathlib import Path
 
-caminho = Path(os.path.abspath(__file__))
-transdorm_dir = caminho.parent
-
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter(
+        fmt='[%(levelname)s] %(name)s - %(message)s'
+    )
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
+logger.setLevel(logging.INFO)
 
 def transform():
+
+    # Step1 : Extract data from web
+    # TODO: code extraction 
+    
     # Step 1: Clean the data
     cleaned_data = clean()
+
+    # Step 2: load data
+    # TODO:insert data in postgres 
     
-    # Step 2: Normalize the time series data
-    #normalized_data, report = normalize_time_series(True, cleaned_data, cleaned_data.columns)
+    # Step 2: Apply Feature Engineering
+    cleaned_data.reset_index(inplace=True)
+    time_fe = TimeFeaturesTransformer('data')
+    fe = time_fe.transform(cleaned_data)
+    fe.set_index('data', inplace=True)
 
-    # Step 3: Print the normalization report
-    #print(report)
+    # Step 3: feature Selection
+    fe_sel = FeatureSelection(fe, 'boi_negociado')
+    selected_rfe, selected_lasso = fe_sel.display_selected_features()
 
-    # Step 4: Select only the columns that were normalized
-    #normalized_data_ = normalized_data.loc[:, normalized_data.columns.str.contains('norm')]
-
-    # Step 5: Save the transformed data to a new file
-    #output_path = os.path.join(transdorm_dir, 'operatores','transformed_data.csv')
-    #normalized_data_.to_csv(output_path, index=True)
-
-    #print(normalized_data_.tail())
+    # Step 4: Save the data
+    actual_dir = os.path.dirname(os.path.dirname(__file__))
+    output_path = os.path.join(actual_dir, 'sensors','dados_modelo.csv')
+    fe[selected_lasso].to_csv(output_path)
 
 if __name__ == "__main__":
     transform()

@@ -35,7 +35,7 @@ class TimeFeaturesTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X: pd.DataFrame):
         X = X.copy()
-        dt = pd.to_datetime(X[self.date_col])
+        dt = pd.to_datetime(X[self.date_col], dayfirst=True, errors="coerce")
         X["dow"] = dt.dt.dayofweek
         X["week"] = dt.dt.isocalendar().week.astype(int)
         X["month"] = dt.dt.month
@@ -102,16 +102,16 @@ class RollingStats(BaseEstimator, TransformerMixin):
 class FeatureSelection():
     def __init__(self, df: pd.DataFrame, target_col: str):
         self.df = df
-        self.y = target_col
+        self.y = df[target_col]
         self.X = df.drop(columns=[target_col])
-        self.feature_names = [f"feature_{i}" for i in range(self.X.shape[1])]
+        self.feature_names = self.X.columns
 
     def select_features(self):
         model_lr = LinearRegression()
         rfe = RFE(estimator=model_lr, n_features_to_select=5)
         rfe.fit(self.X, self.y)
 
-        selected_rfe = [self.feature_names[i] for i in range(len(self.feature_names)) if rfe.support_[i]]
+        selected_rfe = [self.feature_names[i] for i in range(self.X.shape[1]) if rfe.support_[i]]
 
         return selected_rfe
 
@@ -125,7 +125,7 @@ class FeatureSelection():
         return selected_lasso
 
     # Exibir resultados
-    def display_selected_features(self, selected_rfe, selected_lasso):
+    def display_selected_features(self):
         selected_rfe = self.select_features()
         selected_lasso = self.lasso_selection()
 
@@ -134,6 +134,8 @@ class FeatureSelection():
 
         print("=== Seleção de Atributos com Lasso ===")
         print(f"Features selecionadas pelo Lasso: {selected_lasso}\n")
+
+        return selected_rfe, selected_lasso
 
 
 # ==========================================
@@ -185,7 +187,7 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
       existe em X e nos DataFrames exógenos.
     """
     date_col: str      = conf["date_col"]
-    target_col: str    = conf["target_col"]
+    target_col: float    = conf["target_col"]
     #cat_cols: List[str] = conf.get("categorical_cols", [])
     #base_num_cols: List[str] = conf.get("numeric_cols", [])
     lags = conf.get("lags", (1, 7, 28))
@@ -198,8 +200,8 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
     # 2.1) Bloco de engenharia de features "determinísticos"
     fe_steps = [
         ("time", TimeFeaturesTransformer(date_col=date_col)),
-        ("lags", LagFeatures(target_col=target_col, lags=lags, date_col=date_col)),
-        ("rolling", RollingStats(target_col=target_col, windows=rolling_windows, date_col=date_col)),
+        #("lags", LagFeatures(target_col=target_col, lags=lags, date_col=date_col)),
+        #("rolling", RollingStats(target_col=target_col, windows=rolling_windows, date_col=date_col)),
         ("fe_selection", FeatureSelection()),
     ]
     fe_pipe = Pipeline(steps=fe_steps)
@@ -230,13 +232,13 @@ def make_pipeline(conf: Dict[str, Any]) -> Pipeline:
     # )
 
     # 2.3) Modelo (padrão: HistGradientBoostingRegressor)
-    model = HistGradientBoostingRegressor(**model_params)
+    #model = HistGradientBoostingRegressor(**model_params)
 
     # 2.4) Pipeline final
     pipe = Pipeline(steps=[
         ("fe", fe_pipe),     # engenharia de features
         #("pre", pre),        # pré-processamento (imput/scaler/one-hot)
-        ("model", model),    # regressão
+        #("model", model),    # regressão
     ])
 
     return pipe
@@ -252,10 +254,10 @@ class ExampleConfig:
     target_col: str = "demand_kg"
     #categorical_cols: List[str] = None
     #numeric_cols: List[str] = None
-    lags: tuple = (1, 7, 28)
-    rolling_windows: List[int] = None
-    exogenous: List[Dict[str, Any]] = None
-    model_params: Dict[str, Any] = None
+    #lags: tuple = (1, 7, 28)
+    #rolling_windows: List[int] = None
+    #exogenous: List[Dict[str, Any]] = None
+    #model_params: Dict[str, Any] = None
     feature_selection=True,
     #imputer_num_strategy: str = "median"
     #scale_numeric: bool = True

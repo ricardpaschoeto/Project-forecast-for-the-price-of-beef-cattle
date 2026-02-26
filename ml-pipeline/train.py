@@ -1,188 +1,277 @@
+# -*- coding: utf-8 -*-
+"""
+Pipeline completo para previsão de séries temporais (one-step forecasting)
+usando TensorFlow + Optuna + MLflow.
 
-# ml-pipeline/train.py
-import argparse
-import json
-from dataclasses import dataclass
-from typing import List, Optional, Dict
+Autor: Copilot
+"""
 
-import mlflow
 import numpy as np
-import optuna
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error
+from typing import Optional, Tuple, Callable
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import LearningRateScheduler
+from normalize_pipeline import normalize_time_series
+
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# Normalização (reuso do seu módulo)
-from normalize_pipeline import normalize_time_series  # noqa: E402
-# └─ irá salvar/usar os artefatos em operators/power_transformer.joblib e operators/scaler.joblib  @dataclass
-class TrainConfig:
-    experiment: str
-    run_name: str
-    study_name: str
+import optuna
+import mlflow
+import mlflow.tensorflow
+import matplotlib.pyplot as plt
 
-    train_csv: str
-    test_csv: Optional[str]
 
-    date_col: str
-    target_col: str
+def create_windowed_df(X_df:pd.DataFrame,
+                       y_df: pd.Series, 
+                       window_size: int): 
 
-    # colunas a normalizar (ex.: exógenas e/ou demais numéricas já selecionadas)
-    norm_cols: List[str]
+    """
+    Constrói janelas multivariadas utilizando DataFrames.
+
+    Args:
+        X_df: DataFrame (T, n_features).
+        y_df: Série (T,) do target.
+        window_size: número de passos usados como entrada.
+
+    Returns:
+        X_list: lista onde cada item é um DataFrame (window_size x n_features)
+        y_list: Series com o y futuro correspondente.
+    """
+
+    X_list, y_list = [], []
+    T = len(X_df)
+
+    for i in range(T - window_size):
+        window_X = X_df.iloc[i : i + window_size].copy()
+        window_y = y_df.iloc[i + window_size]
+
+        X_list.append(window_X)
+        y_list.append(window_y)
+
+    return X_list, pd.Series(y_list, name=y_df.name)
+
+def convert_windows_to_numpy(X_list):
+
+    """
+    Converte uma lista de DataFrames (cada janela) para numpy (N, window, n_features)
+    """
+
+    X_np = np.stack([df.values for df in X_list])
+
+    return X_np
+
+def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> tf.keras.Model:
+    """
+    Constrói um modelo LSTM com hiperparâmetros sugeridos pelo Optuna.
+
+    Args:
+        trial: Objeto Optuna Trial para sugerir hiperparâmetros.
+        window_size: Tamanho da janela de entrada.
+        n_features: Numero de features.
+
+    Returns:
+        Modelo LSTM compilado.
+    """
+
+    units = trial.suggest_int("n_units", 32, 128)
+    layers = trial.suggest_int("n_layers", 1, 3)
+    dropout_p = trial.suggest_float("dropout", 0.0, 0.5)
+    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
+
+    model = Sequential()
+
+    # Primeira camada
+    return_sequences = (layers > 1)
+    model.add(LSTM(units, input_shape=(window_size, n_features),  
+                   return_sequences=return_sequences))
+    if dropout_p > 0:
+        model.add(Dropout(dropout_p))
+
+    # Camadas intermediárias
+    for _ in range(1, layers - 1):
+        model.add(LSTM(units, return_sequences=True))
+        if dropout_p > 0:
+            model.add(Dropout(dropout_p))
+
+    # Última camada
+    if layers > 1:
+        model.add(LSTM(units, return_sequences=False))
+        if dropout_p > 0:
+            model.add(Dropout(dropout_p))
+
+    
+    model.add(Dense(1))
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+        loss='mae'
+    )
+
+    return model
+
+def train_optuna(
+        X_list: list,
+        y_series: pd.Series,
+        window_size: int,
+        n_splits: int = 3,
+        n_trials: int = 20,
+) -> optuna.Study:
+    """
+    Realiza otimização de hiperparâmetros usando Optuna.
+
+    Args:
+        data: Série temporal como numpy array.
+        window_size: Tamanho da janela de entrada.
+        n_split: Número de splits para TimeSeriesSplit.
+        n_trials: Número de trials para Optuna.
+
+    Returns:
+        Estudo Optuna com os resultados da otimização.
+    """
+
+    # Converte para numpy apenas aqui
+    X_np = convert_windows_to_numpy(X_list)
+    y_np = y_series.Values
+
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    def objective(trial: optuna.Trial) -> float:
+        mae_scores = []
+
+        for train_idx, val_idx in tscv.split(X_np):
+            X_train, X_val = X_np[train_idx], X_np[val_idx]
+            y_train, y_val = y_np[train_idx], y_np[val_idx]
+
+            model = build_lstm_model(trial, window_size, X_np.shape[-1])
+
+            # Scheduler simples: reduz lr a cada época
+            def scheduler(epoch, lr):
+                return lr * 0.95
+
+            model.fit(
+                X_train, y_train,
+                validation_data=(X_val, y_val), 
+                epochs=30, 
+                batch_size=32, 
+                verbose=0,
+                callbacks=[LearningRateScheduler(scheduler)]
+            )
+
+            preds = model.predict(X_val).ravel()
+            mae_score = mean_squared_error(y_val, preds)
+            mae_scores.append(mae_score)
+
+        return float(np.mean(mae_scores))
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials)
+
+    return study
+    
+def train_pipeline(df: pd.DataFrame,
+                   target_col: str,
+                   feature_cols: Optional[list[str]] = None,  
+                   window_size: int = 30,
+                   test_size: int = 60,
+                   optuna_trails: int = 20,
+                   tscv_splits: int = 3,
+                   experiment_name= "boi_gordo") -> None:
+    """
+    Pipeline completa de treinamento e avaliação do modelo LSTM.
+
+    Args:
+        df: DataFrame contendo a série temporal.
+        window_size: Tamanho da janela de entrada.
+        test_size: Tamanho do conjunto de teste.
+
+    Returns:
+        modelo final, previsões do teste.
+    """
+    assert target_col in df.columns
+
+    # Seleciona features automaticamente
+    if feature_cols is None:
+        feature_cols = [c for c in df.columns if c != target_col]
+
+    cols = feature_cols + [target_col]    
+
+    train_df = df.iloc[:-test_size].copy()
+    test_df  = df.iloc[-(test_size + window_size):].copy()
+
+    train_norm, train_report = normalize_time_series(
+        isTrain=True,
+        df=train_df,
+        cols=cols
+    )
+
+    test_norm, _ = normalize_time_series(
+        isTrain=False,
+        df=test_df,
+        cols=cols
+    )
+
+    # Split
+    X_train_df = train_norm[[f"{c}_norm" for c in feature_cols]]
+    y_train_df = train_norm[f"{target_col}_norm"]
+    X_test_df = test_norm[[f"{c}_norm" for c in feature_cols]]
+    y_test_df = test_norm[f"{target_col}_norm"]
+
+    # Criar janelas
+    X_train_list, y_train_series = create_windowed_df(X_train_df, y_train_df, window_size)
+    X_test_list, y_test_series = create_windowed_df(X_test_df, y_test_df, window_size)
 
     # Optuna
-    n_trials: int = 40
-    n_splits: int = 5
-    seed: int = 42
+    study = train_optuna(X_train_list, y_train_series,
+                         window_size, n_splits=tscv_splits, n_trials=optuna_trails)
 
+    # Treino final
+    mlflow.set_experiment(experiment_name)
+    with mlflow.start_run():
 
-def _prepare_norm(df: pd.DataFrame, *, cfg: TrainConfig, is_train: bool) -> pd.DataFrame:
-    """
-    Aplica normalize_time_series APENAS nas colunas de interesse (cfg.norm_cols),
-    preservando as demais colunas como estão. Gera colunas <col>_norm e retorna
-    um DataFrame contendo:
-      - date_col
-      - target_col
-      - <col>_norm para cada col em norm_cols
-    """
-    # normaliza apenas as colunas informadas (já limpas/transformadas/selecionadas)
-    df_norm, _ = normalize_time_series(
-        isTrain=is_train,
-        df=df,
-        cols=cfg.norm_cols,
-        config=None
-    )  # artefatos (scaler/pt) serão salvos/carregados do diretório operators/  [1](https://etnweb-my.sharepoint.com/personal/rmoreir_eletronuclear_gov_br/Documents/Arquivos%20de%20Chat%20do%20Microsoft%20Copilot/normalize_pipeline.py)
+        mlflow.log_params(study.best_params)
 
-    # constrói a matriz final usando apenas as colunas _norm
-    keep_cols = [cfg.date_col, cfg.target_col] + [f"{c}_norm" for c in cfg.norm_cols if f"{c}_norm" in df_norm.columns]
-    missing = [c for c in keep_cols if c not in df_norm.columns]
-    if missing:
-        raise ValueError(f"Colunas esperadas não encontradas após normalização: {missing}")
+        X_train_np = convert_windows_to_numpy(X_train_list)
+        y_train_np = y_train_series.values
+        X_test_np = convert_windows_to_numpy(X_test_list)
+        y_test_np = y_test_series.values
 
-    return df_norm[keep_cols].copy()
+        model = build_lstm_model(study.best_trial, window_size, X_train_np.shape[-1])
 
+        def scheduler(epoch, lr):
+            return lr * 0.95
 
-def _build_model(trial: optuna.Trial) -> HistGradientBoostingRegressor:
-    """
-    Espaço de busca Optuna para HGBR.
-    """
-    params = dict(
-        max_depth=trial.suggest_int('max_depth', 3, 12),
-        learning_rate=trial.suggest_float('learning_rate', 1e-3, 0.2, log=True),
-        max_iter=trial.suggest_int('max_iter', 200, 1200),
-        l2_regularization=trial.suggest_float('l2_regularization', 0.0, 1.0),
-        min_samples_leaf=trial.suggest_int('min_samples_leaf', 2, 60),
-        random_state=42,
-    )
-    return HistGradientBoostingRegressor(**params)
+ 
+        model.fit(X_train_np, y_train_np,
+                  epochs=50,
+                  verbose=1,
+                  batch_size=study.best_params.get("batch_size", 32),
+                  callbacks=[LearningRateScheduler(scheduler)])
+       
 
+        preds = model.predict(X_test_np).ravel()
 
-def _objective(trial: optuna.Trial, cfg: TrainConfig, df_train_in: pd.DataFrame) -> float:
-    """
-    Otimiza HGBR com TimeSeriesSplit em cima do TREINO normalizado.
-    """
-    # normaliza (treino)
-    df_train = _prepare_norm(df_train_in, cfg=cfg, is_train=True)
+        # Métricas
+        mae_score = mean_absolute_error(y_test_np, preds)
+        mse_score = np.sqrt(mean_squared_error(y_test_np, preds))
+        mape_score = np.mean(np.abs((y_test_np - preds) / (np.abs(y_test_np) + 1e-8))) * 100
 
-    y = df_train[cfg.target_col].astype(float).values
-    X = df_train[[f"{c}_norm" for c in cfg.norm_cols]].values
+        mlflow.log_metric("MAE", mae_score)
+        mlflow.log_metric("MSE", mse_score)
+        mlflow.log_metric("MAPE", mape_score)
+        mlflow.tensorflow.log_model(model, "model_lstm")
 
-    tscv = TimeSeriesSplit(n_splits=cfg.n_splits)
-    maes = []
-    model = _build_model(trial)
+        # Gráfico final
+        plt.figure(figsize=(10, 5))
+        plt.plot(y_test_np, label="Real (norm)")
+        plt.plot(preds, label="Prévia (norm)")
+        plt.legend()
+        plt.title("Previsão vs Real (normalizado)")
+        plt.tight_layout()
+        plt.savefig("plot_norm_df.png")
+        mlflow.log_artifact("plot_norm_df.png")
 
-    for tr_idx, va_idx in tscv.split(X):
-        X_tr, X_va = X[tr_idx], X[va_idx]
-        y_tr, y_va = y[tr_idx], y[va_idx]
-        model.fit(X_tr, y_tr)
-        preds = model.predict(X_va)
-        maes.append(mean_absolute_error(y_va, preds))
-
-    score = float(np.mean(maes))
-    mlflow.log_metric("cv_mae", score)
-    # log subset de hiperparâmetros desta iteração
-    mlflow.log_params({k: v for k, v in model.get_params().items()
-                       if k in {'max_depth','learning_rate','max_iter','l2_regularization','min_samples_leaf'}})
-    return score
-
-
-def main(args):
-    cfg = TrainConfig(
-        experiment=args.experiment,
-        run_name=args.run_name,
-        study_name=args.study_name,
-        train_csv=args.train_csv,
-        test_csv=args.test_csv,
-        date_col=args.date_col,
-        target_col=args.target_col,
-        norm_cols=[c.strip() for c in args.norm_cols.split(',') if c.strip()],
-        n_trials=args.n_trials,
-        n_splits=args.n_splits,
-        seed=args.seed,
-    )
-
-    mlflow.set_experiment(cfg.experiment)
-
-    # Carrega CSVs já limpos/transformados/feature-selected
-    df_train_in = pd.read_csv(cfg.train_csv, parse_dates=[cfg.date_col])
-    df_test_in = pd.read_csv(cfg.test_csv, parse_dates=[cfg.date_col]) if cfg.test_csv else None
-
-    with mlflow.start_run(run_name=cfg.run_name):
-        # Log de configuração
-        mlflow.log_param("target_col", cfg.target_col)
-        mlflow.log_param("date_col", cfg.date_col)
-        mlflow.log_param("norm_cols", cfg.norm_cols)
-        mlflow.log_param("model_type", "HGBR_point_scenario")
-
-        # Optuna
-        study = optuna.create_study(direction="minimize", study_name=cfg.study_name)
-        study.optimize(lambda t: _objective(t, cfg, df_train_in), n_trials=cfg.n_trials, show_progress_bar=True)
-
-        mlflow.log_params({f"best_{k}": v for k, v in study.best_params.items()})
-        mlflow.log_metric("best_cv_mae", study.best_value)
-
-        # Treina final no treino normalizado com melhores hiperparâmetros
-        df_train = _prepare_norm(df_train_in, cfg=cfg, is_train=True)
-        y_tr = df_train[cfg.target_col].astype(float).values
-        X_tr = df_train[[f"{c}_norm" for c in cfg.norm_cols]].values
-
-        final_model = HistGradientBoostingRegressor(**study.best_params, random_state=42)
-        final_model.fit(X_tr, y_tr)
-
-        # Avalia no teste (se fornecido), aplicando normalização com isTrain=False
-        if df_test_in is not None:
-            df_test = _prepare_norm(df_test_in, cfg=cfg, is_train=False)
-            y_te = df_test[cfg.target_col].astype(float).values
-            X_te = df_test[[f"{c}_norm" for c in cfg.norm_cols]].values
-            preds_te = final_model.predict(X_te)
-            test_mae = mean_absolute_error(y_te, preds_te)
-            mlflow.log_metric("test_mae", float(test_mae))
-
-        # Loga o estimador para MLflow
-        mlflow.sklearn.log_model(final_model, artifact_path="model")
-        print(f"[Optuna] Best CV MAE: {study.best_value:.4f}")
-        if df_test_in is not None:
-            print(f"[Test] MAE: {test_mae:.4f}")
-
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument('--experiment', type=str, default='boi-gordo')
-    p.add_argument('--run_name', type=str, default='HGBR_point_scenario_optuna')
-    p.add_argument('--study_name', type=str, default='optuna_point_scenario')
-
-    p.add_argument('--train_csv', type=str, required=True)
-    p.add_argument('--test_csv', type=str, default='')
-
-    p.add_argument('--date_col', type=str, default='Date')
-    p.add_argument('--target_col', type=str, default='preco_arroba')
-
-    # As colunas que serão normalizadas pelo normalize_pipeline (limpas/transformadas/selecionadas previamente)
-    p.add_argument('--norm_cols', type=str, required=True, help='lista separada por vírgula, ex.: "selic,ipca,cambio"')
-
-    p.add_argument('--n_trials', type=int, default=40)
-    p.add_argument('--n_splits', type=int, default=5)
-    p.add_argument('--seed', type=int, default=42)
-
-    args = p.parse_args()
-    main(args)
+    return model, preds, (mae_score, mse_score, mape_score)
