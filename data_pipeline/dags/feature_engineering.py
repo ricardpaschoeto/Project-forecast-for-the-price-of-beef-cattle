@@ -108,7 +108,7 @@ class FeatureSelection():
 
     def select_features(self):
         model_lr = LinearRegression()
-        rfe = RFE(estimator=model_lr, n_features_to_select=5)
+        rfe = RFE(estimator=model_lr, n_features_to_select=10)
         rfe.fit(self.X, self.y)
 
         selected_rfe = [self.feature_names[i] for i in range(self.X.shape[1]) if rfe.support_[i]]
@@ -117,7 +117,7 @@ class FeatureSelection():
 
     # 3. Aplicar Lasso para seleção de atributos
     def lasso_selection(self):
-        model_lasso = Lasso(alpha=0.1)
+        model_lasso = Lasso(alpha=0.4)
         model_lasso.fit(self.X, self.y)
 
         selected_lasso = [self.feature_names[i] for i, coef in enumerate(model_lasso.coef_) if coef != 0]

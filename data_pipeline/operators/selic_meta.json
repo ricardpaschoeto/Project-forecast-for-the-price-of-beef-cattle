@@ -1,0 +1,18 @@
+{
+  "is_constant": false,
+  "differencing_applied": 1,
+  "adf_pvalue_initial": 0.903486,
+  "stationary_initial": false,
+  "adf_pvalue_final": 0.0,
+  "stationary_final": true,
+  "transformer": "yeo-johnson+minmax",
+  "shapiro_pvalue": 0.0,
+  "normality": false,
+  "last_train_values": [
+    14.9
+  ],
+  "scaler_range": [
+    0.0,
+    1.0
+  ]
+}

@@ -1,5 +1,4 @@
 from clean_pipeline import clean
-from normalize_pipeline import normalize_time_series
 from feature_engineering import TimeFeaturesTransformer, FeatureSelection
 import logging
 
@@ -44,8 +43,10 @@ def transform():
 
     # Step 4: Save the data
     actual_dir = os.path.dirname(os.path.dirname(__file__))
-    output_path = os.path.join(actual_dir, 'sensors','dados_modelo.csv')
-    fe[selected_lasso].to_csv(output_path)
+    output_path_lasso = os.path.join(actual_dir, 'sensors','dados_modelo_lasso.csv')
+    output_path_rfe = os.path.join(actual_dir, 'sensors','dados_modelo_rfe.csv')
+    fe[selected_lasso + ['boi_negociado']].to_csv(output_path_lasso)
+    fe[selected_rfe + ['boi_negociado']].to_csv(output_path_rfe)
 
 if __name__ == "__main__":
     transform()

@@ -5,6 +5,9 @@ usando TensorFlow + Optuna + MLflow.
 
 Autor: Copilot
 """
+from pathlib import Path
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import numpy as np
 import pandas as pd
@@ -14,7 +17,6 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import LearningRateScheduler
-from normalize_pipeline import normalize_time_series
 
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -23,6 +25,7 @@ import optuna
 import mlflow
 import mlflow.tensorflow
 import matplotlib.pyplot as plt
+from  data_pipeline.dags.normalize_pipeline import normalize_time_series, inverse_transform_column, PipelineConfig
 
 
 def create_windowed_df(X_df:pd.DataFrame,
@@ -135,7 +138,7 @@ def train_optuna(
 
     # Converte para numpy apenas aqui
     X_np = convert_windows_to_numpy(X_list)
-    y_np = y_series.Values
+    y_np = y_series.values
 
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
@@ -197,21 +200,30 @@ def train_pipeline(df: pd.DataFrame,
     if feature_cols is None:
         feature_cols = [c for c in df.columns if c != target_col]
 
-    cols = feature_cols + [target_col]    
+    cols = feature_cols + [target_col]
+    cfg = PipelineConfig() 
 
+    # 1) Split temporal
     train_df = df.iloc[:-test_size].copy()
     test_df  = df.iloc[-(test_size + window_size):].copy()
 
+    # 2) Fit + transform no TREINO (salva artefatos por coluna)
     train_norm, train_report = normalize_time_series(
         isTrain=True,
         df=train_df,
-        cols=cols
+        cols=cols,
+        config=cfg,
+        #artifact_dir="models"  # diretório preferido
+
     )
 
+    # 3) Transform no TESTE usando history (últimos 'd' valores originais do treino por coluna)
     test_norm, _ = normalize_time_series(
         isTrain=False,
         df=test_df,
-        cols=cols
+        cols=cols,
+        config=cfg,
+        #artifact_dir="models"
     )
 
     # Split
@@ -254,6 +266,14 @@ def train_pipeline(df: pd.DataFrame,
 
         preds = model.predict(X_test_np).ravel()
 
+        y_pred_norm_df = pd.DataFrame({"boi_negociado_norm": preds}, index=test_norm.index[-len(preds):])
+
+        y_pred_inv = inverse_transform_column(
+            df_norm = y_pred_norm_df,
+            cols= [target_col],
+            artifact_dir="operators"
+        )
+
         # Métricas
         mae_score = mean_absolute_error(y_test_np, preds)
         mse_score = np.sqrt(mean_squared_error(y_test_np, preds))
@@ -274,4 +294,11 @@ def train_pipeline(df: pd.DataFrame,
         plt.savefig("plot_norm_df.png")
         mlflow.log_artifact("plot_norm_df.png")
 
-    return model, preds, (mae_score, mse_score, mape_score)
+    return model, y_pred_inv, (mae_score, mse_score, mape_score)
+
+
+caminho = Path(os.path.abspath(__file__))
+root_dir = caminho.parent.parent
+df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_lasso.csv')
+train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True),
+               target_col="boi_negociado")
