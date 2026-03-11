@@ -27,7 +27,6 @@ import mlflow.tensorflow
 import matplotlib.pyplot as plt
 from  data_pipeline.dags.normalize_pipeline import normalize_time_series, inverse_transform_column, PipelineConfig
 
-
 def create_windowed_df(X_df:pd.DataFrame,
                        y_df: pd.Series, 
                        window_size: int): 
@@ -174,6 +173,17 @@ def train_optuna(
     study.optimize(objective, n_trials=n_trials)
 
     return study
+
+# Função para criar o experimento
+def cria_experimento(experiment_name):
+
+    # Verifica se o experimento já existe pelo nome
+    if experiment := mlflow.get_experiment_by_name(experiment_name):
+        # Se o experimento existir, retorna seu ID
+        return experiment.experiment_id
+    else:
+        # Se o experimento não existir, cria um novo e retorna seu ID
+        return mlflow.create_experiment(experiment_name)
     
 def train_pipeline(df: pd.DataFrame,
                    target_col: str,
@@ -241,8 +251,9 @@ def train_pipeline(df: pd.DataFrame,
                          window_size, n_splits=tscv_splits, n_trials=optuna_trails)
 
     # Treino final
-    mlflow.set_experiment(experiment_name)
-    with mlflow.start_run():
+    id_experimento = cria_experimento(experiment_name)
+
+    with mlflow.start_run(experiment_id = id_experimento, run_name = experiment_name, nested = True):
 
         mlflow.log_params(study.best_params)
 
@@ -271,7 +282,7 @@ def train_pipeline(df: pd.DataFrame,
         y_pred_inv = inverse_transform_column(
             df_norm = y_pred_norm_df,
             cols= [target_col],
-            artifact_dir="operators"
+            start_values=test_df,
         )
 
         # Métricas
@@ -283,6 +294,7 @@ def train_pipeline(df: pd.DataFrame,
         mlflow.log_metric("MSE", mse_score)
         mlflow.log_metric("MAPE", mape_score)
         mlflow.tensorflow.log_model(model, "model_lstm")
+        print(mlflow.get_artifact_uri("model_lstm"))
 
         # Gráfico final
         plt.figure(figsize=(10, 5))
@@ -300,5 +312,7 @@ def train_pipeline(df: pd.DataFrame,
 caminho = Path(os.path.abspath(__file__))
 root_dir = caminho.parent.parent
 df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_lasso.csv')
-train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True),
+model, y_pred_inv, _ = train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True),
                target_col="boi_negociado")
+
+print(y_pred_inv)

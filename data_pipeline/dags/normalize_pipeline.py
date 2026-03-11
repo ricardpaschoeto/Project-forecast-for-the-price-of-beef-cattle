@@ -288,7 +288,7 @@ def inverse_transform_column(
     Returns:
         df_inv: DataFrame com colunas invertidas (sem sufixo).
     """
-    artifact_dir = Path(artifact_dir or Path("operators"))
+    artifact_dir = Path(artifact_dir or Path("data_pipeline/operators"))
     df_inv = pd.DataFrame(index=df_norm.index.copy())
 
     for col in cols:
