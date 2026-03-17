@@ -1,5 +1,6 @@
 {
   "is_constant": false,
+  "power_transform_applied": true,
   "differencing_applied": 1,
   "adf_pvalue_initial": 0.903486,
   "stationary_initial": false,

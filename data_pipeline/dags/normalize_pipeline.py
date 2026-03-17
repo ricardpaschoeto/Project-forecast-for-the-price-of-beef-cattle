@@ -203,26 +203,32 @@ def _fit_and_transform_column_train(col: str,
         if is_normal:
             transformed = scaler.fit_transform(values)
             transformer_name = "minmax"
+            power_transform_applied = False
         else:
             intermediate = pt.fit_transform(values)
             transformed = scaler.fit_transform(intermediate)
             transformer_name = "yeo-johnson+minmax"
+            power_transform_applied = True
     except Exception as e:
         errors.append(f"transform_error:{e}")
         warnings.warn(f"Falha na transformação: {e}")
         transformed = np.full((series_stationary.shape[0], 1), np.nan)
         transformer_name = "failed"
+        power_transform_applied = False
 
     # Salva artefatos
     pt_path, scaler_path, _ = _col_artifact_paths(artifact_dir, col)
     try:
-        joblib.dump(pt, pt_path)
+        
+        if power_transform_applied and is_normal:
+            joblib.dump(pt, pt_path)
+
         joblib.dump(scaler, scaler_path)
     except Exception as e:
         errors.append(f"artifact_save_error:{e}")
         warnings.warn(f"Falha ao salvar artefatos: {e}")
 
-    return transformed.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors)
+    return transformed.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors), power_transform_applied
 
 def _transform_column_infer(col: str,
                             series_stationary: pd.Series,
@@ -244,9 +250,10 @@ def _transform_column_infer(col: str,
         return np.full((series_stationary.shape[0], 1), np.nan), "failed", None, None, tuple(errors)
 
     values = series_stationary.astype(float).values.reshape(-1, 1)
-    transformer_name = "yeo-johnson+minmax"  # default se falhar o teste de normalidade
+    p_shapiro = _shapiro_pvalue(values.ravel(), cfg.shapiro_sample_cap)
+    is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
     try:
-        if getattr(pt, 'lambdas_', None) is None:
+        if is_normal:
             # Treino decidiu apenas MinMax
             out = scaler.transform(values)
             transformer_name = "minmax"
@@ -266,6 +273,31 @@ def _transform_column_infer(col: str,
         out = np.full(values.shape[0], np.nan)
 
     return out.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors)
+
+
+def inverse_scale_from_meta(norm_values_1d, scaler, pt, transformer_name: str) -> np.ndarray:
+    """
+    norm_values_1d: array 1D (valores normalizados saindo do modelo)
+    Retorna base_vals no espaço da série estacionária (antes de differencing inverso).
+    """
+    X = np.asarray(norm_values_1d, dtype=float).reshape(-1, 1)
+
+    if transformer_name == "minmax":
+        # Apenas MinMax na ida -> Apenas inverse MinMax na volta
+        base = scaler.inverse_transform(X).ravel()
+        return base
+
+    if transformer_name == "yeo-johnson+minmax":
+        # Ida: PT -> MinMax
+        # Volta: MinMax^{-1} -> PT^{-1}
+        base_mm = scaler.inverse_transform(X)
+        if pt is None or getattr(pt, "lambdas_", None) is None:
+            raise RuntimeError("Meta indica Yeo-Johnson, mas o PT não está disponível ou não está fitado.")
+        base = pt.inverse_transform(base_mm).ravel()
+        return base
+
+    raise ValueError(f"transformer_name desconhecido: {transformer_name}")
+
 
 def inverse_transform_column(
         df_norm: pd.DataFrame,
@@ -304,6 +336,10 @@ def inverse_transform_column(
 
         d = int(meta.get("differencing_applied", 0))
         is_constant = bool(meta.get("is_constant", False))
+        start_values = start_values.tail(max(d, 10))        
+        transformer_name = meta.get("transformer", "minmax")
+        power_transform_applied = bool(meta.get("power_transform_applied", transformer_name.startswith("yeo-johnson")))
+
 
         if is_constant:
             # Para colunas constantes, a inversão é trivial: basta preencher com o valor único original.
@@ -312,13 +348,21 @@ def inverse_transform_column(
             continue
 
         # 1) inverter escalas (scaler/pt)
+        pt = None
+        if power_transform_applied:
+            try:
+                pt: PowerTransformer = joblib.load(pt_path)
+            except Exception as e:
+                warnings.warn(f"Falha ao carregar artefato PT para '{col}': {e}")
+                df_inv[col] = np.nan
+                continue
+
         try:
-            pt: PowerTransformer = joblib.load(pt_path)
             scaler: MinMaxScaler = joblib.load(scaler_path)
         except Exception as e:
-            warnings.warn(f"Falha ao carregar artefatos para '{col}': {e}")
-            df_inv[col] = np.nan
-            continue
+                warnings.warn(f"Falha ao carregar artefato MinMax para '{col}': {e}")
+                df_inv[col] = np.nan
+                continue            
 
         norm_col_name = f"{col}_norm"
         if norm_col_name not in df_norm.columns:
@@ -328,44 +372,73 @@ def inverse_transform_column(
 
         norm_values = df_norm[norm_col_name].astype(float).values.reshape(-1, 1)
         try:
-            if getattr(pt, 'lambdas_', None) is None:
-                # Treino aplicou apenas MinMax
-                inv_scaled = scaler.inverse_transform(norm_values)
-                base_vals = inv_scaled.ravel()
-            else:
-                # Treino aplicou Yeo-Johnson + MinMax
-                inv_scaled = scaler.inverse_transform(norm_values)
-                base_vals = pt.inverse_transform(inv_scaled).ravel()
+            base_vals = inverse_scale_from_meta(
+                norm_values_1d=norm_values,
+                scaler=scaler,
+                pt=pt,
+                transformer_name=transformer_name
+            )
+
         except Exception as e:
             warnings.warn(f"Falha na inversão da transformação para '{col}': {e}")
             df_inv[col] = np.nan
             continue
 
         # 2) inverter differencing (se aplicável)
+
+        diff_values = np.asarray(df_norm[norm_col_name].values, dtype=float).ravel()
+        history_original = np.asarray(start_values[col].values, dtype=float).ravel()
         if d > 0:
             if start_values is None or col not in start_values.columns:
                 warnings.warn(f"Valores iniciais para reversão de differencing de '{col}' não fornecidos.")
                 df_inv[col] = base_vals # Retorna os valores transformados sem inverter o diff
             else:
-                hist = start_values[col].astype(float)
-                # Precisamos dos últimos d valores originais do treino
-                if len(hist) < d:
-                    warnings.warn(f"Valores iniciais para '{col}' insuficientes para reversão de differencing (d={d}).")
-                    df_inv[col] = base_vals # Retorna os valores transformados sem inverter o diff
-                else:
-                    # reconstrução cumulativa: para d vezes, acumular as diferenças
-                    recon = base_vals.copy()
-                    # Faça a reconstrução em d passos
-                    for order in range(d):
-                        # ponto inicial para a reconstrução é o último valor original do treino naquele nível
-                        s0 = hist.iloc[-(d - order)]
-                        recon = np.r_[s0, np.cumsum(recon)]
-                        recon = recon[1:]  # remove o primeiro elemento (s0) que foi adicionado apenas para acumular
+                  # remove o primeiro elemento (s0) que foi adicionado apenas para acumular
+                  recon = diff_values.copy()
+                  for order in range(d, 0, -1):
+                    if order - 1 > 0:
+                        # último valor do nível (order-1) das diferenças do histórico original
+                        seed = np.diff(history_original, n=order-1)[-1]
+                    else:
+                        seed = history_original[-1]
+
+                    recon = np.cumsum(np.r_[seed, recon])[1:]
                     df_inv[col] = recon
         else:
             df_inv[col] = base_vals
 
         return df_inv
+
+
+def _round_trip_test(values, cfg):
+    # Treino
+    pt = PowerTransformer(method="yeo-johnson")
+    scaler = MinMaxScaler(feature_range=cfg.scaler_range)
+
+    p = _shapiro_pvalue(values.values, cfg.shapiro_sample_cap)
+    is_normal = (p is not None) and (p > cfg.shapiro_alpha)
+
+    if is_normal:
+        transformed = scaler.fit_transform(values.reshape(-1,1)).ravel()
+        transformer_name = "minmax"
+        pt_fitted = None
+    else:
+        inter = pt.fit_transform(values.values.reshape(-1,1))
+        transformed = scaler.fit_transform(inter).ravel()
+        transformer_name = "yeo-johnson+minmax"
+        pt_fitted = pt
+
+    # Inversão
+    recon = inverse_scale_from_meta(
+        norm_values_1d=transformed,
+        scaler=scaler,
+        pt=pt_fitted,
+        transformer_name=transformer_name
+    )
+
+    # Erro relativo médio
+    err = np.mean(np.abs(recon - values) / (np.abs(values) + 1e-9))
+    return err, transformer_name
 
 # =========================
 # Pipeline principal
@@ -526,15 +599,14 @@ def normalize_time_series(
             s_stat, d, p_final, stationary_final = _make_stationary_train(series_orig, cfg)
 
             # 2) Fit + Transform (salvando artefatos por coluna)
-            transformed, transformer_name, p_shapiro, is_normal, err = _fit_and_transform_column_train(
-                col, s_stat, cfg, artifact_dir_path
-            )
+            transformed, transformer_name, p_shapiro, is_normal, err, power_transform_applied = _fit_and_transform_column_train(col, s_stat, cfg, artifact_dir_path)
             errors.extend(list(err))
 
             # 3) salvar meta com informações necessárias para inferência e inversão
             pt_path, scaler_path, meta_path = _col_artifact_paths(artifact_dir_path, col)
             meta = {
                 "is_constant": False,
+                "power_transform_applied": power_transform_applied,
                 "differencing_applied": d,
                 "adf_pvalue_initial": None if p_initial is None else round(p_initial, 6),
                 "stationary_initial": stationary_initial,
@@ -639,7 +711,12 @@ def normalize_time_series(
 
     return df_out, reports
 
-
+# caminho = Path(os.path.abspath(__file__))
+# root_dir = caminho.parent.parent
+# df_path = os.path.join(root_dir, 'sensors', 'dados_modelo_lasso.csv')
+# values = pd.read_csv(df_path, index_col=0, parse_dates=True)
+# cfg = PipelineConfig()
+# err, transformer_name = _round_trip_test(values=values['boi_negociado'], cfg=cfg)
 
 # =========================
 # Execução direta (exemplo)

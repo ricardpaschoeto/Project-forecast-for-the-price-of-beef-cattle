@@ -80,7 +80,7 @@ def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> 
     """
 
     units = trial.suggest_int("n_units", 32, 128)
-    layers = trial.suggest_int("n_layers", 1, 3)
+    layers = trial.suggest_int("n_layers", 1, 5)
     dropout_p = trial.suggest_float("dropout", 0.0, 0.5)
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
 
@@ -211,14 +211,15 @@ def train_pipeline(df: pd.DataFrame,
         feature_cols = [c for c in df.columns if c != target_col]
 
     cols = feature_cols + [target_col]
-    cfg = PipelineConfig() 
+    cfg = PipelineConfig()
+    cfg.interpolate = True
 
     # 1) Split temporal
     train_df = df.iloc[:-test_size].copy()
     test_df  = df.iloc[-(test_size + window_size):].copy()
 
     # 2) Fit + transform no TREINO (salva artefatos por coluna)
-    train_norm, train_report = normalize_time_series(
+    train_norm, _ = normalize_time_series(
         isTrain=True,
         df=train_df,
         cols=cols,
@@ -247,8 +248,7 @@ def train_pipeline(df: pd.DataFrame,
     X_test_list, y_test_series = create_windowed_df(X_test_df, y_test_df, window_size)
 
     # Optuna
-    study = train_optuna(X_train_list, y_train_series,
-                         window_size, n_splits=tscv_splits, n_trials=optuna_trails)
+    study = train_optuna(X_train_list, y_train_series, window_size, n_splits=tscv_splits, n_trials=optuna_trails)
 
     # Treino final
     id_experimento = cria_experimento(experiment_name)
@@ -282,7 +282,7 @@ def train_pipeline(df: pd.DataFrame,
         y_pred_inv = inverse_transform_column(
             df_norm = y_pred_norm_df,
             cols= [target_col],
-            start_values=test_df,
+            start_values=train_df[[target_col]]
         )
 
         # Métricas
@@ -310,9 +310,10 @@ def train_pipeline(df: pd.DataFrame,
 
 
 caminho = Path(os.path.abspath(__file__))
+
 root_dir = caminho.parent.parent
 df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_lasso.csv')
 model, y_pred_inv, _ = train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True),
-               target_col="boi_negociado")
+               target_col="boi_negociado", optuna_trails=20, tscv_splits=3)
 
 print(y_pred_inv)
