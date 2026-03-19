@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import numpy as np
 import pandas as pd
 from typing import Optional, Tuple, Callable
+import warnings
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -80,7 +81,7 @@ def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> 
     """
 
     units = trial.suggest_int("n_units", 32, 128)
-    layers = trial.suggest_int("n_layers", 1, 5)
+    layers = trial.suggest_int("n_layers", 1, 5, 10)
     dropout_p = trial.suggest_float("dropout", 0.0, 0.5)
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
 
@@ -186,6 +187,7 @@ def cria_experimento(experiment_name):
         return mlflow.create_experiment(experiment_name)
     
 def train_pipeline(df: pd.DataFrame,
+                   path: str,
                    target_col: str,
                    feature_cols: Optional[list[str]] = None,  
                    window_size: int = 30,
@@ -286,6 +288,7 @@ def train_pipeline(df: pd.DataFrame,
         )
 
         # Métricas
+
         mae_score = mean_absolute_error(y_test_np, preds)
         mse_score = np.sqrt(mean_squared_error(y_test_np, preds))
         mape_score = np.mean(np.abs((y_test_np - preds) / (np.abs(y_test_np) + 1e-8))) * 100
@@ -293,8 +296,12 @@ def train_pipeline(df: pd.DataFrame,
         mlflow.log_metric("MAE", mae_score)
         mlflow.log_metric("MSE", mse_score)
         mlflow.log_metric("MAPE", mape_score)
-        mlflow.tensorflow.log_model(model, "model_lstm")
-        print(mlflow.get_artifact_uri("model_lstm"))
+        try:
+            model.save(path)
+        except Exception as e:
+            warnings.warn(f"Falha ao salvar o modelo: {e}")
+        # mlflow.keras.log_model(model, artifact_path="model_lstm")
+        # print(mlflow.get_artifact_uri("model_lstm"))
 
         # Gráfico final
         plt.figure(figsize=(10, 5))
@@ -313,7 +320,8 @@ caminho = Path(os.path.abspath(__file__))
 
 root_dir = caminho.parent.parent
 df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_lasso.csv')
-model, y_pred_inv, _ = train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True),
-               target_col="boi_negociado", optuna_trails=20, tscv_splits=3)
+model_path = os.path.join(caminho.parent, 'models','model_lstm.h5')
+model, y_pred_inv, _ = train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True), path=model_path,target_col="boi_negociado", optuna_trails=20, tscv_splits=3, 
+                                      test_size=60)
 
 print(y_pred_inv)

@@ -218,11 +218,9 @@ def _fit_and_transform_column_train(col: str,
 
     # Salva artefatos
     pt_path, scaler_path, _ = _col_artifact_paths(artifact_dir, col)
-    try:
-        
-        if power_transform_applied and is_normal:
-            joblib.dump(pt, pt_path)
-
+    try:        
+        #if power_transform_applied: #and is_normal:
+        joblib.dump(pt, pt_path)
         joblib.dump(scaler, scaler_path)
     except Exception as e:
         errors.append(f"artifact_save_error:{e}")
@@ -512,11 +510,11 @@ def normalize_time_series(
 
             if isTrain:
                 scaler = MinMaxScaler(feature_range=cfg.scaler_range)
+                pt = PowerTransformer(method="yeo-johnson")
                 try:
                     scaler.fit(np.full((1, 1), const_val))
                     joblib.dump(scaler, scaler_path)
-                    # "pt" não é necessário; salvar um "pt vazio" apenas por compatibilidade
-                    pt = PowerTransformer(method="yeo-johnson")
+                    # "pt" não é necessário; salvar um "pt vazio" apenas por compatibilidade                    
                     joblib.dump(pt, pt_path)
                 except Exception as e:
                     warnings.warn(f"Falha ao salvar scaler/pt para coluna constante '{col}': {e}")
