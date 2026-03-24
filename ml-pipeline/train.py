@@ -268,14 +268,12 @@ def train_pipeline(df: pd.DataFrame,
 
         def scheduler(epoch, lr):
             return lr * 0.95
-
  
         model.fit(X_train_np, y_train_np,
                   epochs=50,
                   verbose=1,
                   batch_size=study.best_params.get("batch_size", 32),
-                  callbacks=[LearningRateScheduler(scheduler)])
-       
+                  callbacks=[LearningRateScheduler(scheduler)])       
 
         preds = model.predict(X_test_np).ravel()
 
@@ -288,7 +286,6 @@ def train_pipeline(df: pd.DataFrame,
         )
 
         # Métricas
-
         mae_score = mean_absolute_error(y_test_np, preds)
         mse_score = np.sqrt(mean_squared_error(y_test_np, preds))
         mape_score = np.mean(np.abs((y_test_np - preds) / (np.abs(y_test_np) + 1e-8))) * 100
@@ -300,8 +297,6 @@ def train_pipeline(df: pd.DataFrame,
             model.save(path)
         except Exception as e:
             warnings.warn(f"Falha ao salvar o modelo: {e}")
-        # mlflow.keras.log_model(model, artifact_path="model_lstm")
-        # print(mlflow.get_artifact_uri("model_lstm"))
 
         # Gráfico final
         plt.figure(figsize=(10, 5))
