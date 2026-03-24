@@ -80,6 +80,7 @@ def transform():
     
     # Step 1: Clean the data
     cleaned_data = clean()
+    cleaned_data.drop(columns=['boi_dolar'], inplace=True)
 
     # Step 2: load data
     # TODO:insert data in postgres 

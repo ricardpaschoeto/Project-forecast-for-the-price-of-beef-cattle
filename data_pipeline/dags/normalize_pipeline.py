@@ -502,6 +502,7 @@ def normalize_time_series(
 
         series_orig = df_out[col].astype(float)
 
+
         # CONSTANTE?
         if _is_constant(series_orig):
             const_val = float(series_orig.iloc[0]) if len(series_orig) > 0 else 0.0
@@ -644,6 +645,7 @@ def normalize_time_series(
             )
 
         else:
+            print(col)
             # INFERÊNCIA (teste/produção): carregar artefatos e transformar SEM ajuste
             pt_path, scaler_path, meta_path = _col_artifact_paths(artifact_dir_path, col)
             try:

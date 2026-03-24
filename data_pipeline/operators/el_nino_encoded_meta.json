@@ -2,7 +2,7 @@
   "is_constant": false,
   "power_transform_applied": true,
   "differencing_applied": 1,
-  "adf_pvalue_initial": 0.336364,
+  "adf_pvalue_initial": 0.45534,
   "stationary_initial": false,
   "adf_pvalue_final": 0.0,
   "stationary_final": true,
@@ -10,7 +10,7 @@
   "shapiro_pvalue": 0.0,
   "normality": false,
   "last_train_values": [
-    12.88
+    0.0
   ],
   "scaler_range": [
     0.0,

@@ -190,7 +190,7 @@ def train_pipeline(df: pd.DataFrame,
                    path: str,
                    target_col: str,
                    feature_cols: Optional[list[str]] = None,  
-                   window_size: int = 30,
+                   window_size: int = 60,
                    test_size: int = 60,
                    optuna_trails: int = 20,
                    tscv_splits: int = 3,
@@ -319,9 +319,14 @@ def train_pipeline(df: pd.DataFrame,
 caminho = Path(os.path.abspath(__file__))
 
 root_dir = caminho.parent.parent
-df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_lasso.csv')
+df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_rfe.csv')
 model_path = os.path.join(caminho.parent, 'models','model_lstm.h5')
-model, y_pred_inv, _ = train_pipeline(df=pd.read_csv(df_path, index_col=0, parse_dates=True), path=model_path,target_col="boi_negociado", optuna_trails=20, tscv_splits=3, 
-                                      test_size=60)
+df_train = pd.read_csv(df_path, index_col=0, parse_dates=True)
+model, y_pred_inv, _ = train_pipeline(df=df_train, 
+                                      path=model_path,
+                                      target_col="boi_negociado", 
+                                      optuna_trails=20, 
+                                      tscv_splits=3, 
+                                      test_size=30)
 
 print(y_pred_inv)

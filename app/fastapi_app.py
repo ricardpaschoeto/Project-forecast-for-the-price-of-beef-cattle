@@ -10,17 +10,17 @@
 
 from pathlib import Path
 import os
+import sys
+# Caminho absoluto da raiz do projeto
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT_DIR))
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import pandas as pd
 import numpy as np
 import tensorflow as tf
-import joblib
-import json
-
-from sklearn.preprocessing import MinMaxScaler, PowerTransformer
-from data_pipeline.dags.normalize_pipeline import normalize_time_series, PipelineConfig
 
 # ---------------------- CONFIGURAÇÕES ------------------------
 
@@ -29,19 +29,21 @@ root_dir = path.parent.parent
 model_path = os.path.join(root_dir, 'ml-pipeline' ,'models', "model_lstm.h5")
 operators_path = os.path.join(root_dir, 'data_pipeline' ,'operators')
 
+
+hist_path = os.path.join(root_dir, 'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
+df_hist = pd.read_csv(hist_path, index_col=0, dayfirst=True)
+df_hist.index = pd.to_datetime(df_hist.index, dayfirst=True)
+
+
 # ordem exata usada no treinamento
 FEATURE_COLS = [
-    "boi_futuro", "boi_dolar", "soja_real", "soja_dolar", "soja_futuro",
-    "milho_futuro", "milho_real", "milho_dolar", "precip_total_mm",
-    "selic", "cme", "week"
+    "Taxa_EUA_norm","milho_dolar_norm","dolar_norm","CovidPeriodFlag_norm","festas_juninas_flag_norm","sao_joao_flag_norm","sao_pedro_flag_norm","finados_weekend_flag_norm","ipca_norm","el_nino_encoded_norm"
 ]
 
 TARGET_COL = "boi_negociado"
 
 # objetos globais carregados no startup
 model = None
-scalers = {}
-
 
 # ----------------------- LIFESPAN APP ------------------------
 
@@ -55,11 +57,12 @@ async def lifespan(app: FastAPI):
     global model
 
     print("\n🚀 Inicializando API e carregando recursos...\n")
-
+    
     # --- Carrega modelo ---
     try:
         print("🔄 Carregando modelo LSTM...")
-        model = tf.keras.models.load_model(model_path)
+        model = tf.keras.models.load_model(model_path, compile=False)
+        print(model.input_shape)
         print("✅ Modelo carregado!")
     except Exception as e:
         print(f"❌ Erro carregando modelo: {e}")
@@ -84,21 +87,6 @@ class PredictRequest(BaseModel):
     date: str            # data futura desejada
     scenario: dict       # ex: {"boi_futuro": 310.2, "soja_real": 145.3, ...}
 
-
-# -------------------- FUNÇÕES AUXILIARES ----------------------
-
-def scale_input_row(df_row: pd.DataFrame) -> np.ndarray:
-    """
-    Aplica o scaler individual de cada coluna e retorna:
-        shape = (1, 1, n_features)
-    Pois é um one-step LSTM sem janela histórica.
-    """
-    config = PipelineConfig()
-    df_out, _ = normalize_time_series(isTrain=False, df=df_row, cols=FEATURE_COLS, config=config, artifact_dir=operators_path)
-
-    X =df_out.values.reshape(1, 1, -1)
-    return X
-
 # ------------------------- ENDPOINT ---------------------------
 
 @app.post("/predict")
@@ -108,20 +96,16 @@ def predict(req: PredictRequest):
     Modelo espera timesteps=1 e n_features conforme treino.
     """
     try:
-        # verifica features obrigatórias
-        missing = [c for c in FEATURE_COLS if c not in req.scenario]
-        if missing:
-            raise HTTPException(status_code=400,
-                                detail=f"Features ausentes no cenário: {missing}")
-
-        # cria DataFrame com 1 linha
-        row = pd.DataFrame([{col: req.scenario[col] for col in FEATURE_COLS}])
+        
+        # 1. Construir janela de 60 steps
+        scenario_df = pd.DataFrame(req.scenario)
+        #window = np.array(req.scenario)
 
         # aplica normalização (um scaler por coluna)
-        X = scale_input_row(row)
+        X = scenario_df.values.reshape(1, 60, len(FEATURE_COLS))  # shape (1, 60, 10)
 
         # previsão
-        y_pred = model.predict(X, verbose=0)
+        y_pred = model.predict(X)
         y_pred_value = float(y_pred[0][0])
 
         return {
