@@ -29,7 +29,6 @@ root_dir = path.parent.parent
 model_path = os.path.join(root_dir, 'ml-pipeline' ,'models', "model_lstm.h5")
 operators_path = os.path.join(root_dir, 'data_pipeline' ,'operators')
 
-
 hist_path = os.path.join(root_dir, 'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
 df_hist = pd.read_csv(hist_path, index_col=0, dayfirst=True)
 df_hist.index = pd.to_datetime(df_hist.index, dayfirst=True)

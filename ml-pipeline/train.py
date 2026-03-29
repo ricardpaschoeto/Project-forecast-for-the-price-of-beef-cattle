@@ -273,7 +273,9 @@ def train_pipeline(df: pd.DataFrame,
                   epochs=50,
                   verbose=1,
                   batch_size=study.best_params.get("batch_size", 32),
-                  callbacks=[LearningRateScheduler(scheduler)])       
+                  callbacks=[LearningRateScheduler(scheduler)])
+
+        print(model.input_shape)       
 
         preds = model.predict(X_test_np).ravel()
 
@@ -320,7 +322,8 @@ df_train = pd.read_csv(df_path, index_col=0, parse_dates=True)
 model, y_pred_inv, _ = train_pipeline(df=df_train, 
                                       path=model_path,
                                       target_col="boi_negociado", 
-                                      optuna_trails=20, 
+                                      optuna_trails=10,
+                                      window_size=60,
                                       tscv_splits=3, 
                                       test_size=30)
 

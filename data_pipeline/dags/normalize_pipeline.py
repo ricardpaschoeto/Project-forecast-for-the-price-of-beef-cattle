@@ -35,10 +35,8 @@ class NormalizationReport:
     stationary_final: Optional[bool]
     shapiro_pvalue: Optional[float]
     normality: Optional[bool]
-    transformer: str  # "minmax" ou "yeo-johnson+minmax"
+    transformer: str  # "StandardScaler" ou "yeo-johnson+StandardScaler""
     errors: Tuple[str, ...]
-
-
 
 @dataclass
 class PipelineConfig:
@@ -186,7 +184,7 @@ def _fit_and_transform_column_train(col: str,
 
 
     """
-    Treina (fit) e aplica a transformação (PowerTransformer opcional + MinMax) para a coluna,
+    Treina (fit) e aplica a transformação (PowerTransformer opcional + StandardScaler) para a coluna,
     salvando artefatos por coluna.
     """
     errors: list[str] = []
@@ -202,13 +200,13 @@ def _fit_and_transform_column_train(col: str,
     try:
         if is_normal:
             transformed = scaler.fit_transform(values)
-            transformer_name = "standard-scaller"
+            transformer_name = "standard-scaler"
             power_transform_applied = False
         else:
             intermediate = pt.fit_transform(values)
             intermediate = np.clip(intermediate, a_min=-10, a_max=10)
             transformed = scaler.fit_transform(intermediate)
-            transformer_name = "yeo-johnson+standard-scaller"
+            transformer_name = "yeo-johnson+standard-scaler"
             power_transform_applied = True
     except Exception as e:
         errors.append(f"transform_error:{e}")
@@ -253,17 +251,17 @@ def _transform_column_infer(col: str,
     is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
     try:
         if is_normal:
-            # Treino decidiu apenas MinMax
+            # Treino decidiu apenas StandardScaler
             out = scaler.transform(values)
-            transformer_name = "standard-scaller"
+            transformer_name = "standard-scaler"
             p_shapiro = _shapiro_pvalue(values.ravel(), cfg.shapiro_sample_cap)
             is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
         else:
-            # Treino aplicou Yeo-Johnson + MinMax
+            # Treino aplicou Yeo-Johnson + StandardScaler
             intermediate = pt.transform(values)
             intermediate = np.clip(intermediate, a_min=-10, a_max=10)
             out = scaler.transform(intermediate)
-            transformer_name = "yeo-johnson+standard-scaller"
+            transformer_name = "yeo-johnson+standard-scaler"
             p_shapiro = _shapiro_pvalue(values.ravel(), cfg.shapiro_sample_cap)
             is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
 
@@ -282,14 +280,14 @@ def inverse_scale_from_meta(norm_values_1d, scaler, pt, transformer_name: str) -
     """
     X = np.asarray(norm_values_1d, dtype=float).reshape(-1, 1)
 
-    if transformer_name == "standard-scaller":
-        # Apenas MinMax na ida -> Apenas inverse MinMax na volta
+    if transformer_name == "standard-scaler":
+        # Apenas StandardScaler na ida -> Apenas inverse StandardScaler na volta
         base = scaler.inverse_transform(X).ravel()
         return base
 
-    if transformer_name == "yeo-johnson+standard-scaller":
-        # Ida: PT -> MinMax
-        # Volta: MinMax^{-1} -> PT^{-1}
+    if transformer_name == "yeo-johnson+standard-scaler":
+        # Ida: PT -> StandardScaler
+        # Volta: StandardScaler^{-1} -> PT^{-1}
         base_mm = scaler.inverse_transform(X)
         if pt is None or getattr(pt, "lambdas_", None) is None:
             raise RuntimeError("Meta indica Yeo-Johnson, mas o PT não está disponível ou não está fitado.")
@@ -337,7 +335,7 @@ def inverse_transform_column(
         d = int(meta.get("differencing_applied", 0))
         is_constant = bool(meta.get("is_constant", False))
         start_values = start_values.tail(max(d, 10))        
-        transformer_name = meta.get("transformer", "standard-scaller")
+        transformer_name = meta.get("transformer", "standard-scaler")
         power_transform_applied = bool(meta.get("power_transform_applied", transformer_name.startswith("yeo-johnson")))
 
 
@@ -420,12 +418,12 @@ def _round_trip_test(values, cfg):
 
     if is_normal:
         transformed = scaler.fit_transform(values.reshape(-1,1)).ravel()
-        transformer_name = "standard-scaller"
+        transformer_name = "standard-scaler"
         pt_fitted = None
     else:
         inter = pt.fit_transform(values.values.reshape(-1,1))
         transformed = scaler.fit_transform(inter).ravel()
-        transformer_name = "yeo-johnson+standard-scaller"
+        transformer_name = "yeo-johnson+standard-scaler"
         pt_fitted = pt
 
     # Inversão
@@ -521,7 +519,7 @@ def normalize_time_series(
       - Teste ADF (estacionaridade) + differencing incremental (se necessário)
       - (Opcional) Interpolação pós-diff
       - Teste Shapiro-Wilk (normalidade)
-      - MinMaxScaler ou Yeo-Johnson + MinMax
+      - StandardScaler ou Yeo-Johnson + StandardScaler, dependendo da normalidade
     -> Sem data leakage: no treino faz FIT e salva artefatos por coluna;
        no teste carrega e TRANSFORMA usando 'history_df' para differencing.
 

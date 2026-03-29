@@ -11,6 +11,7 @@
 from pathlib import Path
 import os
 import sys
+
 # Caminho absoluto da raiz do projeto
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
@@ -27,6 +28,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from datetime import date
+from pydantic import BaseModel
+import tensorflow as tf
 
 import time
 from data_pipeline.dags.normalize_pipeline import normalize_time_series, PipelineConfig, inverse_transform_column
@@ -39,9 +42,13 @@ API_URL = "http://localhost:8000/predict"
 
 DEBOUNCE_SECONDS = 1.0  # intervalo mínimo entre chamadas
 
+FEATURE_COLS = ["Taxa_EUA","milho_dolar","dolar","CovidPeriodFlag","festas_juninas_flag","sao_joao_flag","sao_pedro_flag","finados_weekend_flag","ipca","el_nino_encoded"]
+
 path = Path(os.path.abspath(__file__))
 root_dir = path.parent.parent
 operators_path = os.path.join(root_dir, 'data_pipeline' ,'operators')
+df_path = os.path.join(root_dir,'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
+model_path = os.path.join(root_dir, 'ml-pipeline' ,'models', "model_lstm.h5")
 
 # Inicializa estado
 if "last_call" not in st.session_state:
@@ -57,15 +64,9 @@ def call_api_with_debounce(payload):
     # Agora é seguro chamar a API
     response = requests.post(API_URL, json=payload)
     return response
-
-
-path = Path(os.path.abspath(__file__))
-root_dir = path.parent.parent
-df_path = os.path.join(root_dir,'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
-
-FEATURE_COLS = [
-                "Taxa_EUA","milho_dolar","dolar","CovidPeriodFlag","festas_juninas_flag","sao_joao_flag","sao_pedro_flag","finados_weekend_flag","ipca","el_nino_encoded"
-]
+class PredictRequest(BaseModel):
+    date: str            # data futura desejada
+    scenario: dict       # ex: {"boi_futuro": 310.2, "soja_real": 145.3, ...}
 
 # ======================================================================
 # CSS avançado
@@ -122,6 +123,18 @@ def load_history():
 
 df_hist = load_history()
 
+def _carrega_modelo():
+    try:
+        print("🔄 Carregando modelo LSTM...")
+        model = tf.keras.models.load_model(model_path, compile=False)
+        print(model.input_shape)
+        print("✅ Modelo carregado!")
+        return model
+    except Exception as e:
+        print(f"❌ Erro carregando modelo: {e}")
+        raise e
+
+model = _carrega_modelo()
 
 def compute_sigma(df):
     """Desvio padrão dos retornos — usado para IC 95%."""
@@ -143,7 +156,7 @@ def plot_forecast(fig, ax, df_hist, data_prev, y_pred, ic95):
             linewidth=2)
 
     # Ponto previsto
-    forecast_date = pd.to_datetime(data_prev)
+    forecast_date = pd.to_datetime(data_prev,format="mixed",dayfirst=True)
     ax.scatter(forecast_date,
                y_pred,
                color="#E63946",
@@ -206,7 +219,6 @@ def gerar_pdf(preco_atual, y_pred, data_prev, tendencia, fig):
     buffer.seek(0)
     return buffer
 
-
 def backtest(df, steps=200):
     """Rolling-origin cross-validation via API (one-step)."""
     rows = []
@@ -239,6 +251,26 @@ def backtest(df, steps=200):
 
     return pd.DataFrame(rows)
 
+# RSI calculation
+def compute_rsi(series, window):
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window).mean()
+    avg_loss = pd.Series(loss).rolling(window).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# MACD calculation
+def compute_macd(series, fast, slow):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    return ema_fast - ema_slow
+
+# Volatility calculation
+def compute_volatility(series, window):
+    return series.pct_change().rolling(window).std() * np.sqrt(252)
+
 def scale_input_row(df_window: pd.DataFrame) -> np.ndarray:
     """
     Aplica o scaler individual de cada coluna e retorna:
@@ -265,6 +297,9 @@ def build_lstm_window(future_row: pd.DataFrame) -> pd.DataFrame:
     # pega os últimos 59 steps da série histórica
     df_tail = df_hist[FEATURE_COLS].tail(59)
 
+    # garante mesmas colunas e mesma ordem
+    future_row = future_row.reindex(columns=FEATURE_COLS, fill_value=0)
+
     # concatena o step futuro
     df_window = pd.concat([df_tail, future_row], ignore_index=True)
 
@@ -272,6 +307,60 @@ def build_lstm_window(future_row: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Janela incorreta: esperado (60,10), obtido {df_window.shape}")
 
     return df_window
+
+def _test_create_predict_data(scenario):
+    scenario_df = pd.DataFrame([scenario])
+    df_window = build_lstm_window(scenario_df)
+    df_out = scale_input_row(df_window)
+    df_norm = df_out[df_out.columns[df_out.columns.str.endswith("_norm")]]
+    scenario_dict = df_norm.to_dict(orient="records")
+
+    scenario_df = pd.DataFrame(scenario_dict)
+    return scenario_df,scenario_dict
+
+def _predict(req: PredictRequest):
+    """
+    Realiza a previsão one-step usando somente o cenário informado.
+    Modelo espera timesteps=1 e n_features conforme treino.
+    """
+    # try:
+    #     print("🔄 Carregando modelo LSTM...")
+    #     model = tf.keras.models.load_model(model_path, compile=False)
+    #     print(model.input_shape)
+    #     print("✅ Modelo carregado!")
+    # except Exception as e:
+    #     print(f"❌ Erro carregando modelo: {e}")
+    #     raise e
+    
+    try:
+        
+        # 1. Construir janela de 60 steps
+        scenario_df = pd.DataFrame([req.scenario])
+
+
+        # remove sufixo _norm das colunas
+        future_row = scenario_df.rename(
+            columns=lambda c: c.replace("_norm", "")
+        )
+
+
+        window = build_lstm_window(future_row)
+
+        # aplica normalização (um scaler por coluna)
+        X = window.values.reshape(1, 60, len(FEATURE_COLS))  # shape (1, 60, 10)
+
+        # previsão
+        y_pred = model.predict(X)
+        y_pred_value = float(y_pred[0][0])
+
+        return {
+            "date": req.date,
+            "prediction": y_pred_value
+        }
+    
+    except Exception as e:
+        print(f"Erro na previsão: {e}")
+        raise e
 
 # =========================================================================
 # SIDEBAR — PREVISÃO ONE-STEP
@@ -321,27 +410,6 @@ tab_dashboard, tab_cenarios, tab_backtest   = st.tabs([
 # -------------------------------------------------------------------------
 # TAB: DASHBOARD ESTILO TRADING TERMINAL
 # -------------------------------------------------------------------------
-
-# RSI calculation
-def compute_rsi(series, window):
-    delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window).mean()
-    avg_loss = pd.Series(loss).rolling(window).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# MACD calculation
-def compute_macd(series, fast, slow):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    return ema_fast - ema_slow
-
-# Volatility calculation
-def compute_volatility(series, window):
-    return series.pct_change().rolling(window).std() * np.sqrt(252)
-
 with tab_dashboard:
 
     st.markdown("## 💹 Trading Dashboard — Boi Negociado")
@@ -362,7 +430,9 @@ with tab_dashboard:
     with col4:
         window_vol = st.slider("Volatility Window", 5, 60, 20)
 
-    # Compute indicators
+    # ================================
+    # Calcular indicadores técnicos usando os dados históricos
+    # ================================
     rsi = compute_rsi(df_hist["boi_negociado"], window_rsi)
     macd = compute_macd(df_hist["boi_negociado"], window_macd_fast, window_macd_slow)
     vol = compute_volatility(df_hist["boi_negociado"], window_vol)
@@ -423,30 +493,32 @@ with tab_dashboard:
         grafico_container.pyplot(st.session_state["fig1"])
 
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    if True:  
-        scenario_df = pd.DataFrame([scenario])
-        df_window = build_lstm_window(scenario_df)
-        df_out = scale_input_row(df_window)
-        df_norm = df_out[df_out.columns[df_out.columns.str.endswith("_norm")]]
-        scenario_dict = df_norm.to_dict(orient="records")
 
-        scenario_df = pd.DataFrame(scenario_dict)
-        X = scenario_df.values.reshape(1, 60, len(FEATURE_COLS))
+    # ================================
+    # FIGURA 1 — Predição One-Step via API
+    # ================================
+       
+    if True:         
+        scenario_df, scenario_dict = _test_create_predict_data(scenario)
+        req = PredictRequest(date=data_prev, scenario=scenario_dict[0])
+        res = _predict(req)
 
-        payload = {"date": str(selected_date), "scenario": scenario_dict}
-        res = call_api_with_debounce(payload)
+        # X = scenario_df.values.reshape(1, 60, len(FEATURE_COLS))
+
+        # payload = {"date": str(selected_date), "scenario": scenario_dict}
+        # res = call_api_with_debounce(payload)
         
         if res is None:
             st.warning("🔁 Aguarde antes de rodar a previsão novamente...")
             st.stop()
-        if res.status_code != 200:
-            st.error("Erro na API: " + res.text)
-            st.stop()
+        #if res.status_code != 200:
+            #st.error("Erro na API: " + res.text)
+            #st.stop()
         else:
 
             # inversão da normalização para o valor real
-            y_pred_df = pd.DataFrame({'boi_negociado_norm': [float(res.json()["prediction"])]}, index=[pd.to_datetime( res.json()["date"], format="%Y-%m-%d")])
+            #y_pred_df = pd.DataFrame({'boi_negociado_norm': [float(res.json()["prediction"])]}, index=[pd.to_datetime( res.json()["date"], format="%Y-%m-%d")])
+            y_pred_df = pd.DataFrame({'boi_negociado_norm': [float(res["prediction"])]}, index=[pd.to_datetime( res["date"], format="%d/%m/%Y")])
 
             y_pred_value = inverse_transform_column(
                 df_norm = y_pred_df,
@@ -456,7 +528,8 @@ with tab_dashboard:
             )
 
             pred = float(y_pred_value.to_numpy().squeeze())
-            data_prev = res.json()["date"]
+            #data_prev = res.json()["date"]
+            data_prev = res["date"]
 
             preco_atual = float(df_hist["boi_negociado"].iloc[-1])
             tendencia = "Alta" if pred > preco_atual else "Baixa"
