@@ -6,7 +6,7 @@
   "stationary_initial": false,
   "adf_pvalue_final": 0.0,
   "stationary_final": true,
-  "transformer": "yeo-johnson+standard-scaler",
+  "transformer": "yeo-johnson+minmax-scaler",
   "shapiro_pvalue": 0.0,
   "normality": false,
   "last_train_values": [

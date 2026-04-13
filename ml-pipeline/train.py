@@ -6,6 +6,7 @@ usando TensorFlow + Optuna + MLflow.
 Autor: Copilot
 """
 from pathlib import Path
+from pyexpat import model
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -16,7 +17,7 @@ import warnings
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.callbacks import LearningRateScheduler
 
 from sklearn.model_selection import TimeSeriesSplit
@@ -81,16 +82,18 @@ def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> 
     """
 
     units = trial.suggest_int("n_units", 32, 128)
-    layers = trial.suggest_int("n_layers", 1, 5, 10)
+    layers = trial.suggest_int(name="n_layers", low=1, high=5)
     dropout_p = trial.suggest_float("dropout", 0.0, 0.5)
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
 
     model = Sequential()
+    
+    # Camada de entrada explícita (elimina o warning)
+    model.add(Input(shape=(window_size, n_features)))
 
     # Primeira camada
     return_sequences = (layers > 1)
-    model.add(LSTM(units, input_shape=(window_size, n_features),  
-                   return_sequences=return_sequences))
+    model.add(LSTM(units, return_sequences=return_sequences))
     if dropout_p > 0:
         model.add(Dropout(dropout_p))
 
@@ -105,7 +108,6 @@ def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> 
         model.add(LSTM(units, return_sequences=False))
         if dropout_p > 0:
             model.add(Dropout(dropout_p))
-
     
     model.add(Dense(1))
 
@@ -189,7 +191,8 @@ def cria_experimento(experiment_name):
 def train_pipeline(df: pd.DataFrame,
                    path: str,
                    target_col: str,
-                   feature_cols: Optional[list[str]] = None,  
+                   feature_cols: Optional[list[str]] = None,
+                   cols_flags: Optional[list[str]] = None,
                    window_size: int = 60,
                    test_size: int = 60,
                    optuna_trails: int = 20,
@@ -212,7 +215,7 @@ def train_pipeline(df: pd.DataFrame,
     if feature_cols is None:
         feature_cols = [c for c in df.columns if c != target_col]
 
-    cols = feature_cols + [target_col]
+    cols = feature_cols + [target_col] + (cols_flags or [])
     cfg = PipelineConfig()
     cfg.interpolate = True
 
@@ -225,6 +228,7 @@ def train_pipeline(df: pd.DataFrame,
         isTrain=True,
         df=train_df,
         cols=cols,
+        cols_flags=cols_flags,
         config=cfg,
         #artifact_dir="models"  # diretório preferido
 
@@ -235,14 +239,15 @@ def train_pipeline(df: pd.DataFrame,
         isTrain=False,
         df=test_df,
         cols=cols,
+        cols_flags=cols_flags,
         config=cfg,
         #artifact_dir="models"
     )
 
     # Split
-    X_train_df = train_norm[[f"{c}_norm" for c in feature_cols]]
+    X_train_df = train_norm[[f"{c}_norm" for c in feature_cols + (cols_flags or [])]]
     y_train_df = train_norm[f"{target_col}_norm"]
-    X_test_df = test_norm[[f"{c}_norm" for c in feature_cols]]
+    X_test_df = test_norm[[f"{c}_norm" for c in feature_cols + (cols_flags or [])]]
     y_test_df = test_norm[f"{target_col}_norm"]
 
     # Criar janelas
@@ -303,7 +308,7 @@ def train_pipeline(df: pd.DataFrame,
         # Gráfico final
         plt.figure(figsize=(10, 5))
         plt.plot(y_test_np, label="Real (norm)")
-        plt.plot(preds, label="Prévia (norm)")
+        plt.plot(y_pred_inv, label="Prévia (norm)")
         plt.legend()
         plt.title("Previsão vs Real (normalizado)")
         plt.tight_layout()
@@ -321,7 +326,9 @@ model_path = os.path.join(caminho.parent, 'models','model_lstm.h5')
 df_train = pd.read_csv(df_path, index_col=0, parse_dates=True)
 model, y_pred_inv, _ = train_pipeline(df=df_train, 
                                       path=model_path,
-                                      target_col="boi_negociado", 
+                                      target_col="boi_negociado",
+                                      feature_cols= ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca'],
+                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag'],
                                       optuna_trails=10,
                                       window_size=60,
                                       tscv_splits=3, 
