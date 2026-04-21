@@ -16,6 +16,7 @@ import sys
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
+from typing import List, Dict
 import streamlit as st
 import requests
 import pandas as pd
@@ -42,13 +43,37 @@ API_URL = "http://localhost:8000/predict"
 
 DEBOUNCE_SECONDS = 1.0  # intervalo mínimo entre chamadas
 
-FEATURE_COLS = ["Taxa_EUA","milho_dolar","dolar","CovidPeriodFlag","festas_juninas_flag","sao_joao_flag","sao_pedro_flag","finados_weekend_flag","ipca","el_nino_encoded"]
+COLS_FLAGS = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag', 'el_nino_encoded']
+FEATURE_COLS = ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca']
 
 path = Path(os.path.abspath(__file__))
 root_dir = path.parent.parent
 operators_path = os.path.join(root_dir, 'data_pipeline' ,'operators')
 df_path = os.path.join(root_dir,'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
 model_path = os.path.join(root_dir, 'ml-pipeline' ,'models', "model_lstm.h5")
+
+# ========================
+def _load_history():
+    path = Path(os.path.abspath(__file__))
+    root_dir = path.parent.parent
+    df_path = os.path.join(root_dir,'data_pipeline', 'sensors', 'dados_modelo_rfe.csv')
+    df = pd.read_csv(df_path, index_col=0, dayfirst=True)
+    df.index = pd.to_datetime(df.index, dayfirst=True)
+    df.drop(columns=["boi_negociado"], inplace=True)
+    return df   
+
+def load_scenarios(dates: list[str]):
+    scenario = {}
+    list_scenarios = []
+    for date in dates:
+        scenario[date] = _load_history().loc[date].to_dict()
+        list_scenarios.append(scenario[date])
+
+    return list_scenarios
+# ========================
+
+dates = ["03/01/2020", "29/03/2020", "17/07/2020", "20/07/2025", "11/08/2025"] # 196.7, 200.5, 222.55, 215.3, 227.2
+scenarios = load_scenarios(dates)
 
 # Inicializa estado
 if "last_call" not in st.session_state:
@@ -66,7 +91,7 @@ def call_api_with_debounce(payload):
     return response
 class PredictRequest(BaseModel):
     date: str            # data futura desejada
-    scenario: dict       # ex: {"boi_futuro": 310.2, "soja_real": 145.3, ...}
+    scenario: List[Dict[str, float]]     # ex: {"boi_futuro": 310.2, "soja_real": 145.3, ...}
 
 # ======================================================================
 # CSS avançado
@@ -280,11 +305,11 @@ def scale_input_row(df_window: pd.DataFrame) -> np.ndarray:
     config = PipelineConfig()
     df_out, _ = normalize_time_series(isTrain=False, 
                                       df=df_window, 
-                                      cols=FEATURE_COLS, 
+                                      cols=df_window.columns.to_list(),
+                                      cols_flags=COLS_FLAGS,
                                       config=config, 
                                       artifact_dir=operators_path)
 
-    #X = df_out.values.reshape(1, 60, len(FEATURE_COLS))
     return df_out
 
 
@@ -295,16 +320,16 @@ def build_lstm_window(future_row: pd.DataFrame) -> pd.DataFrame:
     - 1 linha de cenário futuro vinda do payload
     """
     # pega os últimos 59 steps da série histórica
-    df_tail = df_hist[FEATURE_COLS].tail(59)
+    df_tail = df_hist[FEATURE_COLS + COLS_FLAGS].tail(59)
 
     # garante mesmas colunas e mesma ordem
-    future_row = future_row.reindex(columns=FEATURE_COLS, fill_value=0)
+    future_row = future_row.reindex(columns=FEATURE_COLS + COLS_FLAGS, fill_value=0)
 
     # concatena o step futuro
     df_window = pd.concat([df_tail, future_row], ignore_index=True)
 
-    if df_window.shape != (60, len(FEATURE_COLS)):
-        raise ValueError(f"Janela incorreta: esperado (60,10), obtido {df_window.shape}")
+    if df_window.shape != (60, len(FEATURE_COLS) + len(COLS_FLAGS)):
+        raise ValueError(f"Janela incorreta: esperado (60,{len(FEATURE_COLS) + len(COLS_FLAGS)}), obtido {df_window.shape}")
 
     return df_window
 
@@ -312,7 +337,7 @@ def _test_create_predict_data(scenario):
     scenario_df = pd.DataFrame([scenario])
     df_window = build_lstm_window(scenario_df)
     df_out = scale_input_row(df_window)
-    df_norm = df_out[df_out.columns[df_out.columns.str.endswith("_norm")]]
+    df_norm = df_out.filter(regex='_norm$')
     scenario_dict = df_norm.to_dict(orient="records")
 
     scenario_df = pd.DataFrame(scenario_dict)
@@ -323,31 +348,23 @@ def _predict(req: PredictRequest):
     Realiza a previsão one-step usando somente o cenário informado.
     Modelo espera timesteps=1 e n_features conforme treino.
     """
-    # try:
-    #     print("🔄 Carregando modelo LSTM...")
-    #     model = tf.keras.models.load_model(model_path, compile=False)
-    #     print(model.input_shape)
-    #     print("✅ Modelo carregado!")
-    # except Exception as e:
-    #     print(f"❌ Erro carregando modelo: {e}")
-    #     raise e
-    
+ 
     try:
         
         # 1. Construir janela de 60 steps
-        scenario_df = pd.DataFrame([req.scenario])
-
+        scenario_df = pd.DataFrame(req.scenario)
 
         # remove sufixo _norm das colunas
-        future_row = scenario_df.rename(
+        scenario_df = scenario_df.rename(
             columns=lambda c: c.replace("_norm", "")
         )
 
-
-        window = build_lstm_window(future_row)
+        future_row = scenario_df.reindex(columns=df_hist.columns.drop("boi_negociado"), fill_value=0)
+        # TODO: Normalizar toda a JANELA
+        # window = build_lstm_window(future_row)
 
         # aplica normalização (um scaler por coluna)
-        X = window.values.reshape(1, 60, len(FEATURE_COLS))  # shape (1, 60, 10)
+        X = future_row.values.reshape(1, 60, len(FEATURE_COLS ) + len(COLS_FLAGS))  # shape (1, 60, 10)
 
         # previsão
         y_pred = model.predict(X)
@@ -498,9 +515,9 @@ with tab_dashboard:
     # FIGURA 1 — Predição One-Step via API
     # ================================
        
-    if True:         
-        scenario_df, scenario_dict = _test_create_predict_data(scenario)
-        req = PredictRequest(date=data_prev, scenario=scenario_dict[0])
+    if True: # run_forecast:
+        scenario_df, scenario_dict = _test_create_predict_data(scenarios[1])
+        req = PredictRequest(date=data_prev, scenario=scenario_dict)
         res = _predict(req)
 
         # X = scenario_df.values.reshape(1, 60, len(FEATURE_COLS))

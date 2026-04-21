@@ -53,7 +53,7 @@ def create_windowed_df(X_df:pd.DataFrame,
         window_X = X_df.iloc[i : i + window_size].copy()
         window_y = y_df.iloc[i + window_size]
 
-        X_list.append(window_X)
+        X_list.append(window_X.copy())
         y_list.append(window_y)
 
     return X_list, pd.Series(y_list, name=y_df.name)
@@ -272,7 +272,9 @@ def train_pipeline(df: pd.DataFrame,
         model = build_lstm_model(study.best_trial, window_size, X_train_np.shape[-1])
 
         def scheduler(epoch, lr):
-            return lr * 0.95
+            if lr < 1e-5:
+                return lr               
+            return lr * 0.98
  
         model.fit(X_train_np, y_train_np,
                   epochs=50,
@@ -307,8 +309,8 @@ def train_pipeline(df: pd.DataFrame,
 
         # Gráfico final
         plt.figure(figsize=(10, 5))
-        plt.plot(y_test_np, label="Real (norm)")
-        plt.plot(y_pred_inv, label="Prévia (norm)")
+        plt.plot(y_test_np, label="Real")
+        plt.plot(y_pred_inv, label="Prévia")
         plt.legend()
         plt.title("Previsão vs Real (normalizado)")
         plt.tight_layout()
@@ -328,10 +330,12 @@ model, y_pred_inv, _ = train_pipeline(df=df_train,
                                       path=model_path,
                                       target_col="boi_negociado",
                                       feature_cols= ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca'],
-                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag'],
+                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag', 'el_nino_encoded'],
                                       optuna_trails=10,
-                                      window_size=60,
+                                      window_size=90,
                                       tscv_splits=3, 
                                       test_size=30)
 
 print(y_pred_inv)
+
+# Taxa_EUA,milho_dolar,dolar,CovidPeriodFlag,festas_juninas_flag,sao_joao_flag,sao_pedro_flag,finados_weekend_flag,ipca,el_nino_encoded,boi_negociado
