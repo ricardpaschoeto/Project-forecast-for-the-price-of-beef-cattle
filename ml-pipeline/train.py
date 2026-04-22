@@ -243,7 +243,7 @@ def train_pipeline(df: pd.DataFrame,
         config=cfg,
         #artifact_dir="models"
     )
-
+    print(test_norm.isna().sum())
     # Split
     X_train_df = train_norm[[f"{c}_norm" for c in feature_cols + (cols_flags or [])]]
     y_train_df = train_norm[f"{target_col}_norm"]
@@ -329,8 +329,8 @@ df_train = pd.read_csv(df_path, index_col=0, parse_dates=True)
 model, y_pred_inv, _ = train_pipeline(df=df_train, 
                                       path=model_path,
                                       target_col="boi_negociado",
-                                      feature_cols= ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca'],
-                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag', 'el_nino_encoded'],
+                                      feature_cols= ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca', 'el_nino_encoded'],
+                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag'],
                                       optuna_trails=10,
                                       window_size=90,
                                       tscv_splits=3, 

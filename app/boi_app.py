@@ -43,8 +43,8 @@ API_URL = "http://localhost:8000/predict"
 
 DEBOUNCE_SECONDS = 1.0  # intervalo mínimo entre chamadas
 
-COLS_FLAGS = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag', 'el_nino_encoded']
-FEATURE_COLS = ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca']
+COLS_FLAGS = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag']
+FEATURE_COLS = ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca', 'el_nino_encoded']
 
 path = Path(os.path.abspath(__file__))
 root_dir = path.parent.parent
@@ -320,7 +320,7 @@ def build_lstm_window(future_row: pd.DataFrame) -> pd.DataFrame:
     - 1 linha de cenário futuro vinda do payload
     """
     # pega os últimos 59 steps da série histórica
-    df_tail = df_hist[FEATURE_COLS + COLS_FLAGS].tail(59)
+    df_tail = df_hist[FEATURE_COLS + COLS_FLAGS].tail(89)
 
     # garante mesmas colunas e mesma ordem
     future_row = future_row.reindex(columns=FEATURE_COLS + COLS_FLAGS, fill_value=0)
@@ -328,8 +328,8 @@ def build_lstm_window(future_row: pd.DataFrame) -> pd.DataFrame:
     # concatena o step futuro
     df_window = pd.concat([df_tail, future_row], ignore_index=True)
 
-    if df_window.shape != (60, len(FEATURE_COLS) + len(COLS_FLAGS)):
-        raise ValueError(f"Janela incorreta: esperado (60,{len(FEATURE_COLS) + len(COLS_FLAGS)}), obtido {df_window.shape}")
+    if df_window.shape != (90, len(FEATURE_COLS) + len(COLS_FLAGS)):
+        raise ValueError(f"Janela incorreta: esperado (90,{len(FEATURE_COLS) + len(COLS_FLAGS)}), obtido {df_window.shape}")
 
     return df_window
 
@@ -364,7 +364,7 @@ def _predict(req: PredictRequest):
         # window = build_lstm_window(future_row)
 
         # aplica normalização (um scaler por coluna)
-        X = future_row.values.reshape(1, 60, len(FEATURE_COLS ) + len(COLS_FLAGS))  # shape (1, 60, 10)
+        X = future_row.values.reshape(1, 90, len(FEATURE_COLS ) + len(COLS_FLAGS))  # shape (1, 90, 10)
 
         # previsão
         y_pred = model.predict(X)
@@ -515,8 +515,8 @@ with tab_dashboard:
     # FIGURA 1 — Predição One-Step via API
     # ================================
        
-    if True: # run_forecast:
-        scenario_df, scenario_dict = _test_create_predict_data(scenarios[1])
+    if run_forecast:
+        scenario_df, scenario_dict = _test_create_predict_data(scenario)
         req = PredictRequest(date=data_prev, scenario=scenario_dict)
         res = _predict(req)
 

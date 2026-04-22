@@ -260,6 +260,7 @@ def _fit_and_transform_column_train(col: str,
     return transformed.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors), power_transform_applied
 
 def _transform_column_infer(col: str,
+                            is_target: bool,
                             series_stationary: pd.Series,
                             cfg: PipelineConfig,
                             artifact_dir: Path
@@ -272,9 +273,10 @@ def _transform_column_infer(col: str,
     try:
         pt: PowerTransformer = joblib.load(pt_path)
         scaler_ts: RobustScaler = joblib.load(scaler_path)
-        test0 = scaler_path
-        test = scaler_path.stem + "_final_minmax.joblib"
-        final_scaler: MinMaxScaler = joblib.load(scaler_path.with_name(scaler_path.stem + "_final_minmax.joblib"))
+        if not is_target:
+            final_scaler: MinMaxScaler = joblib.load(scaler_path.with_name(scaler_path.stem + "_final_minmax.joblib"))
+        else:
+            final_scaler: MinMaxScaler = joblib.load(scaler_path)
     except Exception as e:
         errors.append(f"artifact_load_error:{e}")
         warnings.warn(f"Falha ao carregar artefatos: {e}")
@@ -287,15 +289,23 @@ def _transform_column_infer(col: str,
     try:
         if is_normal:
             # Treino decidiu apenas RobustScaler + MinMax
-            out = scaler_ts.transform(values)
-            out = final_scaler.transform(out)
-            transformer_name = "robust-scaler+minmax"
+            if not is_target:
+                out = scaler_ts.transform(values)
+                out = final_scaler.transform(out)
+                transformer_name = "robust-scaler+minmax"
+            else:
+                out = final_scaler.transform(values)
+                transformer_name = "minmax-scaler"
         else:
             # Treino aplicou Yeo-Johnson + RobustScaler + minmax
             intermediate = pt.transform(values)
-            out = scaler_ts.transform(intermediate)
-            out = final_scaler.transform(out)
-            transformer_name = "yeo-johnson+robust+minmax"
+            if not is_target:
+                out = scaler_ts.transform(intermediate)
+                out = final_scaler.transform(out)
+                transformer_name = "yeo-johnson+robust+minmax"
+            else:
+                out = final_scaler.transform(intermediate)
+                transformer_name = "yeo-johnson+minmax"
 
     except Exception as e:
         errors.append(f"transform_error:{e}")
@@ -477,7 +487,7 @@ def normalize_time_series(
 
     for col in cols:
         errors: List[str] = []
-        is_target = (col == 'boi_negociado')
+        is_minmax = (col == 'boi_negociado' or col == 'el_nino_encoded')
         if col not in df_out.columns:
             warnings.warn(f"Coluna '{col}' não encontrada no DataFrame.")
             reports[col] = NormalizationReport(
@@ -504,13 +514,11 @@ def normalize_time_series(
             p_initial = _safe_adfuller(series_orig)
             stationary_initial = (p_initial is not None) and (p_initial <= cfg.adf_alpha)
 
-            if not is_target:
+            if not is_minmax:
                 s_stat, d, p_final, stationary_final = _make_stationary_train(series_orig, cfg)
             else:
-                s_stat = series_orig
+                s_stat = series_orig.copy()
                 d = 0
-                p_final = 0.0
-                stationary_final = True
 
             # 2) Fit + Transform (salvando artefatos por coluna)
             cols_feature_scaled = ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca']
@@ -600,10 +608,13 @@ def normalize_time_series(
                         train_tail = None  # sem contexto
 
             # 1) aplicar differencing com history
-            s_stat = _difference_with_history(train_tail, series_orig, d, cfg)
+            if is_minmax:
+                s_stat = series_orig.copy()
+            else:
+                s_stat = _difference_with_history(train_tail, series_orig, d, cfg)
 
             # 2) transformar usando artefatos existentes
-            transformed, transformer_name, p_shapiro, is_normal, err = _transform_column_infer(col, s_stat, cfg, artifact_dir_path)
+            transformed, transformer_name, p_shapiro, is_normal, err = _transform_column_infer(col, is_minmax, s_stat, cfg, artifact_dir_path)
             errors.extend(list(err))
 
             df_out[f"{col}_norm"] = transformed
