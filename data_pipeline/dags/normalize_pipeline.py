@@ -35,11 +35,11 @@ class NormalizationReport:
     stationary_final: Optional[bool]
     shapiro_pvalue: Optional[float]
     normality: Optional[bool]
-    transformer: str  # "StandardScaler" ou "yeo-johnson+StandardScaler""
     errors: Tuple[str, ...]
 
 @dataclass
 class PipelineConfig:
+    lstm_clip: float = 1.5
     adf_alpha: float = 0.05
     max_diff_order: int = 6
     interpolate: bool = True  # preencher após diffs
@@ -55,16 +55,17 @@ class PipelineConfig:
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
-def _col_artifact_paths(artifact_dir: Path, col: str) -> Tuple[Path, Path, Path]:
+def _col_artifact_paths(artifact_dir: Path, col: str) -> Tuple[Path, Path, Path, Path]:
 
     """
     Retorna caminhos para (pt.joblib, scaler.joblib, meta.json) por coluna.
     """
     pt_path = artifact_dir / f"{col}_pt.joblib"
     scaler_path = artifact_dir / f"{col}_scaler.joblib"
+    scaler_final = artifact_dir / f"{col}_final_minmax.joblib"
     meta_path = artifact_dir / f"{col}_meta.json"
 
-    return pt_path, scaler_path, meta_path
+    return pt_path, scaler_path, scaler_final, meta_path
 
 
 # =========================
@@ -177,7 +178,6 @@ def _shapiro_pvalue(values: np.ndarray, cap: int) -> Optional[float]:
 # Transformação / Inversão
 # =========================
 def _fit_and_transform_column_train(col: str,
-                                    cols: Iterable[str],
                                     series_stationary: pd.Series, 
                                     cfg: PipelineConfig,
                                     artifact_dir: Path
@@ -189,67 +189,76 @@ def _fit_and_transform_column_train(col: str,
     salvando artefatos por coluna.
     """
     errors: list[str] = []
-    values = series_stationary.astype(float).values.reshape(-1, 1)
+    vals = series_stationary.astype(float).values.reshape(-1, 1)
 
     # Avalia normalidade para decidir transformação
-    p_shapiro = _shapiro_pvalue(values.ravel(), cfg.shapiro_sample_cap)
+    p_shapiro = _shapiro_pvalue(vals.ravel(), cfg.shapiro_sample_cap)
     is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
 
+    scaler_ts = RobustScaler()
+    need_minmax = False
+    transformed = vals.copy()  # fallback caso a transformação falhe
+    try:
+        if is_normal:
+            transformed = scaler_ts.fit_transform(transformed)
+        else:
+            pt = PowerTransformer(method="yeo-johnson", standardize=False)
+            intermediate = pt.fit_transform(transformed)
+            transformed = scaler_ts.fit_transform(intermediate)
+
+        if np.any(np.abs(transformed) > 1.0):
+            need_minmax = True
+
+    except Exception as e:
+        errors.append(f"scaler_fit_error:{e}")
+        warnings.warn(f"Falha ao ajustar scaler de teste: {e}")
+
     # Salva artefatos
-    pt_path, scaler_path, _ = _col_artifact_paths(artifact_dir, col)
+    pt_path, scaler_path, scaler_final_path, _ = _col_artifact_paths(artifact_dir, col)
     
     try:
         if is_normal:
-            if col in cols:
-                scaler_ts = RobustScaler()
-                transformed = scaler_ts.fit_transform(values)
+            if need_minmax:                
                 final_scaler = MinMaxScaler(feature_range=(-1, 1))
                 transformed = final_scaler.fit_transform(transformed)
                 transformer_name = "robust-scaler+minmax"
                 try:        
                     joblib.dump(scaler_ts, scaler_path)
-                    joblib.dump(final_scaler, scaler_path.with_name(scaler_path.stem + "_final_minmax.joblib"))
+                    joblib.dump(final_scaler, scaler_final_path.with_name(scaler_final_path.stem + "_final_minmax.joblib"))
                 except Exception as e:
                     errors.append(f"artifact_save_error:{e}")
                     warnings.warn(f"Falha ao salvar artefatos: {e}")
             else:
-                scaler_target = MinMaxScaler()
-                transformed = scaler_target.fit_transform(values)       
-                transformer_name = "minmax-scaler"
+                transformer_name = "robust"
                 try:        
-                    joblib.dump(scaler_target, scaler_path)
+                    joblib.dump(scaler_ts, scaler_path)
                 except Exception as e:
                     errors.append(f"artifact_save_error:{e}")
                     warnings.warn(f"Falha ao salvar artefatos: {e}")
+                    
             power_transform_applied = False
         else:
-            pt = PowerTransformer(method="yeo-johnson")
-            intermediate = pt.fit_transform(values)
-            if col in cols:
-                scaler_ts = RobustScaler()                
-                transformed = scaler_ts.fit_transform(intermediate)
+            if need_minmax:
                 final_scaler = MinMaxScaler(feature_range=(-1, 1))
-                transformed = final_scaler.fit_transform(transformed)
+                transformed = final_scaler.fit_transform(intermediate)
                 transformer_name = "yeo-johnson+robust-scaler+minmax"
                 try:        
-                    #if power_transform_applied: #and is_normal:
                     joblib.dump(pt, pt_path)
                     joblib.dump(scaler_ts, scaler_path)
-                    joblib.dump(final_scaler, scaler_path.with_name(scaler_path.stem + "_final_minmax.joblib"))
+                    joblib.dump(final_scaler, scaler_final_path.with_name(scaler_final_path.stem + "_final_minmax.joblib"))
                 except Exception as e:
                     errors.append(f"artifact_save_error:{e}")
                     warnings.warn(f"Falha ao salvar artefatos: {e}")
             else:
-                scaler_target = MinMaxScaler()
-                transformed = scaler_target.fit_transform(intermediate)
-                transformer_name = "yeo-johnson+minmax-scaler"
-                try:        
+                transformer_name = "yeo-johnson+robust"
+                try:
                     joblib.dump(pt, pt_path)
-                    joblib.dump(scaler_target, scaler_path)
+                    joblib.dump(scaler_ts, scaler_path)                    
                 except Exception as e:
                     errors.append(f"artifact_save_error:{e}")
-                    warnings.warn(f"Falha ao salvar artefatos: {e}")
+                    warnings.warn(f"Falha ao salvar artefatos: {e}")            
             power_transform_applied = True
+
     except Exception as e:
         errors.append(f"transform_error:{e}")
         warnings.warn(f"Falha na transformação: {e}")
@@ -260,23 +269,22 @@ def _fit_and_transform_column_train(col: str,
     return transformed.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors), power_transform_applied
 
 def _transform_column_infer(col: str,
-                            is_target: bool,
                             series_stationary: pd.Series,
                             cfg: PipelineConfig,
                             artifact_dir: Path
-                            ) -> Tuple[np.ndarray, str, Optional[float], Optional[bool], Tuple[str, ...]]:
+                            ) -> Tuple[np.ndarray, Tuple[str, ...]]:
     
     """Aplica transformação usando artefatos salvos do treino. Retorna (valores_transformados, nome_transformer, p_shapiro, is_normal, erros)."""
     errors: list[str] = []
-    pt_path, scaler_path, _ = _col_artifact_paths(artifact_dir, col)
-
+    pt_path, scaler_path, scaler_final_path, meta_path = _col_artifact_paths(artifact_dir, col)
+    final_scaler = None
     try:
         pt: PowerTransformer = joblib.load(pt_path)
         scaler_ts: RobustScaler = joblib.load(scaler_path)
-        if not is_target:
-            final_scaler: MinMaxScaler = joblib.load(scaler_path.with_name(scaler_path.stem + "_final_minmax.joblib"))
-        else:
-            final_scaler: MinMaxScaler = joblib.load(scaler_path)
+        meta = json.load(open(meta_path))
+        power_transform_applied = meta.get("power_transform_applied", False)
+        if scaler_final_path.with_name(scaler_final_path.stem + "_final_minmax.joblib").exists():
+            final_scaler: MinMaxScaler = joblib.load(scaler_final_path.with_name(scaler_final_path.stem + "_final_minmax.joblib"))
     except Exception as e:
         errors.append(f"artifact_load_error:{e}")
         warnings.warn(f"Falha ao carregar artefatos: {e}")
@@ -284,35 +292,22 @@ def _transform_column_infer(col: str,
         return np.full((series_stationary.shape[0], 1), np.nan), "failed", None, None, tuple(errors)
 
     values = series_stationary.astype(float).values.reshape(-1, 1)
-    p_shapiro = _shapiro_pvalue(values.ravel(), cfg.shapiro_sample_cap)
-    is_normal = (p_shapiro is not None) and (p_shapiro > cfg.shapiro_alpha)
-    try:
-        if is_normal:
-            # Treino decidiu apenas RobustScaler + MinMax
-            if not is_target:
-                out = scaler_ts.transform(values)
-                out = final_scaler.transform(out)
-                transformer_name = "robust-scaler+minmax"
-            else:
-                out = final_scaler.transform(values)
-                transformer_name = "minmax-scaler"
-        else:
-            # Treino aplicou Yeo-Johnson + RobustScaler + minmax
-            intermediate = pt.transform(values)
-            if not is_target:
-                out = scaler_ts.transform(intermediate)
-                out = final_scaler.transform(out)
-                transformer_name = "yeo-johnson+robust+minmax"
-            else:
-                out = final_scaler.transform(intermediate)
-                transformer_name = "yeo-johnson+minmax"
 
+    try:
+        if power_transform_applied:
+            values = pt.transform(values)
+        out = scaler_ts.transform(values)
+
+        if final_scaler is not None:
+            out = final_scaler.transform(out)
+
+        out = np.clip(out, -cfg.lstm_clip, cfg.lstm_clip)
     except Exception as e:
         errors.append(f"transform_error:{e}")
         warnings.warn(f"Falha na transformação (infer) para '{col}': {e}")
         out = np.full(values.shape[0], np.nan)
 
-    return out.ravel(), transformer_name, p_shapiro, is_normal, tuple(errors)
+    return out.ravel(), tuple(errors)
 
 
 def inverse_scale_from_meta(norm_values_1d, scaler, pt, transformer_name: str) -> np.ndarray:
@@ -327,9 +322,9 @@ def inverse_scale_from_meta(norm_values_1d, scaler, pt, transformer_name: str) -
         base = scaler.inverse_transform(X).ravel()
         return base
 
-    if transformer_name == "yeo-johnson+robust-scaler" or transformer_name == "yeo-johnson+minmax-scaler":
-        # Ida: PT -> StandardScaler
-        # Volta: StandardScaler^{-1} -> PT^{-1}
+    if transformer_name == "yeo-johnson+robust-scaler" or transformer_name == "yeo-johnson+minmax":
+        # Ida: PT -> RobustScaler
+        # Volta: RobustScaler^{-1} -> PT^{-1}
         base_mm = scaler.inverse_transform(X)
         if pt is None or getattr(pt, "lambdas_", None) is None:
             raise RuntimeError("Meta indica Yeo-Johnson, mas o PT não está disponível ou não está fitado.")
@@ -364,7 +359,7 @@ def inverse_transform_column(
     df_inv = pd.DataFrame(index=df_norm.index.copy())
 
     for col in cols:
-        pt_path, scaler_path, meta_path = _col_artifact_paths(artifact_dir, col)
+        pt_path, scaler_path, scaler_final , meta_path = _col_artifact_paths(artifact_dir, col)
 
         try:
             with open(meta_path, "rb") as f:
@@ -449,8 +444,9 @@ def inverse_transform_column(
 def normalize_time_series(
     isTrain: bool,
     df: pd.DataFrame,
-    cols: Iterable[str],
-    cols_flags: Iterable[str] = (),
+    cols_flags: Iterable[str],
+    cols_float: Iterable[str],
+    cols_int: Iterable[str],
     config: Optional[PipelineConfig] = None,
     artifact_dir: Optional[str | Path] = None,
     history_df: Optional[pd.DataFrame] = None,
@@ -467,7 +463,9 @@ def normalize_time_series(
     Args:
         isTrain: True (ajusta e salva) | False (apenas transforma, carregando artefatos).
         df: DataFrame com as colunas a normalizar.
-        cols: colunas a normalizar.
+        cols_flags: colunas flag a normalizar.
+        cols_float: colunas float a normalizar.
+        cols_int: colunas inteiras a normalizar.
         config: PipelineConfig (parâmetros).
         artifact_dir: diretório para armazenar/ler artefatos por coluna (default: ./operators).
         history_df: obrigatório quando isTrain=False e houver differencing (d>0);
@@ -485,9 +483,9 @@ def normalize_time_series(
     df_out = df_out.rename(columns={col: col + '_norm' for col in cols_flags})
     reports: Dict[str, NormalizationReport] = {}
 
+    cols = cols_float + cols_int
     for col in cols:
         errors: List[str] = []
-        is_minmax = (col == 'boi_negociado' or col == 'el_nino_encoded')
         if col not in df_out.columns:
             warnings.warn(f"Coluna '{col}' não encontrada no DataFrame.")
             reports[col] = NormalizationReport(
@@ -507,70 +505,36 @@ def normalize_time_series(
 
         series_orig = df_out[col].astype(float)
 
-
         # NÃO CONSTANTE
         if isTrain:
+            
             # 1) ADF + differencing com fit no TREINO
             p_initial = _safe_adfuller(series_orig)
             stationary_initial = (p_initial is not None) and (p_initial <= cfg.adf_alpha)
 
-            if not is_minmax:
+            # se já for estacionária, segue direto para transformação e salvamento de artefatos
+            if not stationary_initial:
                 s_stat, d, p_final, stationary_final = _make_stationary_train(series_orig, cfg)
             else:
-                s_stat = series_orig.copy()
-                d = 0
+                s_stat, d, p_final, stationary_final = series_orig, 0, p_initial, True
 
             # 2) Fit + Transform (salvando artefatos por coluna)
-            cols_feature_scaled = ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca']
-            transformed, transformer_name, p_shapiro, is_normal, err, power_transform_applied = _fit_and_transform_column_train(col, cols_feature_scaled, s_stat, cfg, artifact_dir_path)
+            transformed, transformer_name, p_shapiro, is_normal, err, power_transform_applied = _fit_and_transform_column_train(col, s_stat, cfg, artifact_dir_path)
             errors.extend(list(err))
 
             # 3) salvar meta com informações necessárias para inferência e inversão
-            pt_path, scaler_path, meta_path = _col_artifact_paths(artifact_dir_path, col)
-            meta = {
-                "is_constant": False,
-                "power_transform_applied": power_transform_applied,
-                "differencing_applied": d,
-                "adf_pvalue_initial": None if p_initial is None else round(p_initial, 6),
-                "stationary_initial": stationary_initial,
-                "adf_pvalue_final": None if p_final is None else round(p_final, 6),
-                "stationary_final": stationary_final,
-                "transformer": transformer_name,
-                "shapiro_pvalue": None if p_shapiro is None else round(p_shapiro, 6),
-                "normality": is_normal,
-                "final_minmax_applied": True,
-                # Guardar últimos d valores originais para facilitar inversão posterior
-                "last_train_values": (
-                    series_orig.tail(d).tolist() if d > 0 else []
-                ),
-            }
-            try:
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                warnings.warn(f"Falha ao salvar meta de '{col}': {e}")
-                errors.append(f"save_meta_error:{e}")
+            _, _, _, meta_path = _col_artifact_paths(artifact_dir_path, col)
+            meta = _save_meta(col, errors, series_orig, p_initial, stationary_initial, d, p_final, stationary_final, transformer_name, p_shapiro, is_normal, power_transform_applied, meta_path)
 
             # 4) Persistir a coluna normalizada no df_out
             df_out[f"{col}_norm"] = transformed
 
-            reports[col] = NormalizationReport(
-                column=col,
-                is_constant=False,
-                adf_pvalue_initial=meta["adf_pvalue_initial"],
-                stationary_initial=stationary_initial,
-                differencing_applied=d,
-                adf_pvalue_final=meta["adf_pvalue_final"],
-                stationary_final=stationary_final,
-                shapiro_pvalue=meta["shapiro_pvalue"],
-                normality=is_normal,
-                transformer=transformer_name,
-                errors=tuple(errors),
-            )
+            _report_load(reports, col, errors, d, meta)
 
         else:
             # INFERÊNCIA (teste/produção): carregar artefatos e transformar SEM ajuste
-            pt_path, scaler_path, meta_path = _col_artifact_paths(artifact_dir_path, col)
+
+            _, _, _, meta_path = _col_artifact_paths(artifact_dir_path, col)
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
@@ -603,23 +567,39 @@ def normalize_time_series(
                     # fallback: usar os valores salvos na meta (últimos do treino)
                     last_vals = meta.get("last_train_values", [])
                     if len(last_vals) >= d:
-                        train_tail = pd.Series(last_vals[-d:], index=[-i for i in range(d, 0, -1)], dtype=float)
+                        train_tail = pd.Series(last_vals[-d:], dtype=float)
                     else:
                         train_tail = None  # sem contexto
 
-            # 1) aplicar differencing com history
-            if is_minmax:
-                s_stat = series_orig.copy()
-            else:
+                # 1) aplicar differencing com history
                 s_stat = _difference_with_history(train_tail, series_orig, d, cfg)
+                
+                def _is_constant(series: pd.Series, eps: float = 1e-8) -> bool:
+                    if series.empty:
+                        return True
+                    return series.nunique(dropna=True) <= 1 or series.std() < eps
+
+                if _is_constant(s_stat):
+                    warnings.warn(f"Série '{col}' é constante após differencing (d={d}). Usando série original para transformação.")                    
+                    df_out[f"{col}_norm"] = np.zeros(len(series_orig))
+                    errors.append("constant_after_differencing")
+
+                    continue            
+            else:
+                s_stat = series_orig
 
             # 2) transformar usando artefatos existentes
-            transformed, transformer_name, p_shapiro, is_normal, err = _transform_column_infer(col, is_minmax, s_stat, cfg, artifact_dir_path)
+            transformed, err = _transform_column_infer(col, s_stat, cfg, artifact_dir_path)
             errors.extend(list(err))
 
             df_out[f"{col}_norm"] = transformed
 
-            reports[col] = NormalizationReport(
+            _report_load(reports, col, errors, d, meta)
+
+    return df_out, reports
+
+def _report_load(reports, col, errors, d, meta):
+    reports[col] = NormalizationReport(
                 column=col,
                 is_constant=False,
                 adf_pvalue_initial=meta.get("adf_pvalue_initial"),
@@ -627,13 +607,36 @@ def normalize_time_series(
                 differencing_applied=d,
                 adf_pvalue_final=meta.get("adf_pvalue_final"),
                 stationary_final=meta.get("stationary_final"),
-                shapiro_pvalue=p_shapiro,
-                normality=is_normal,
-                transformer=transformer_name,
+                shapiro_pvalue=meta.get("shapiro_pvalue"),
+                normality=meta.get("normality"),
                 errors=tuple(errors),
             )
 
-    return df_out, reports
+def _save_meta(col, errors, series_orig, p_initial, stationary_initial, d, p_final, stationary_final, transformer_name, p_shapiro, is_normal, power_transform_applied, meta_path):
+    meta = {
+                "is_constant": False,
+                "power_transform_applied": power_transform_applied,
+                "differencing_applied": d,
+                "adf_pvalue_initial": None if p_initial is None else round(p_initial, 6),
+                "stationary_initial": stationary_initial,
+                "adf_pvalue_final": None if p_final is None else round(p_final, 6),
+                "stationary_final": stationary_final,
+                "transformer": transformer_name,
+                "shapiro_pvalue": None if p_shapiro is None else round(p_shapiro, 6),
+                "normality": is_normal,
+                "final_minmax_applied": True,
+                # Guardar últimos d valores originais para facilitar inversão posterior
+                "last_train_values": (
+                    series_orig.tail(d).tolist() if d > 0 else []
+                ),
+            }
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        warnings.warn(f"Falha ao salvar meta de '{col}': {e}")
+        errors.append(f"save_meta_error:{e}")
+    return meta
 
 # caminho = Path(os.path.abspath(__file__))
 # root_dir = caminho.parent.parent

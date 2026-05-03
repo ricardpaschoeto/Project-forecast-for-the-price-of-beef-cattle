@@ -6,13 +6,15 @@ usando TensorFlow + Optuna + MLflow.
 Autor: Copilot
 """
 from pathlib import Path
-from pyexpat import model
 import sys, os
+
+from streamlit import columns, json
+import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Tuple, Callable
+from typing import Tuple
 import warnings
 
 import tensorflow as tf
@@ -25,7 +27,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import optuna
 import mlflow
-import mlflow.tensorflow
 import matplotlib.pyplot as plt
 from  data_pipeline.dags.normalize_pipeline import normalize_time_series, inverse_transform_column, PipelineConfig
 
@@ -93,26 +94,42 @@ def build_lstm_model(trial: optuna.Trial, window_size: int, n_features: int) -> 
 
     # Primeira camada
     return_sequences = (layers > 1)
-    model.add(LSTM(units, return_sequences=return_sequences))
+    model.add(LSTM(units, 
+                   return_sequences=return_sequences,
+                   activation='tanh',
+                   recurrent_activation='sigmoid',
+                   kernel_initializer='glorot_uniform',
+                   recurrent_initializer='orthogonal'))
     if dropout_p > 0:
         model.add(Dropout(dropout_p))
 
     # Camadas intermediárias
     for _ in range(1, layers - 1):
-        model.add(LSTM(units, return_sequences=True))
+        model.add(LSTM(units, 
+                   return_sequences=return_sequences,
+                   activation='tanh',
+                   recurrent_activation='sigmoid',
+                   kernel_initializer='glorot_uniform',
+                   recurrent_initializer='orthogonal'))
         if dropout_p > 0:
             model.add(Dropout(dropout_p))
 
     # Última camada
     if layers > 1:
-        model.add(LSTM(units, return_sequences=False))
+        model.add(LSTM(units, 
+                   return_sequences=False,
+                   activation='tanh',
+                   recurrent_activation='sigmoid',
+                   kernel_initializer='glorot_uniform',
+                   recurrent_initializer='orthogonal',
+                   input_shape=(window_size, n_features)))
         if dropout_p > 0:
             model.add(Dropout(dropout_p))
     
     model.add(Dense(1))
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0),
         loss='mae'
     )
 
@@ -167,7 +184,7 @@ def train_optuna(
             )
 
             preds = model.predict(X_val).ravel()
-            mae_score = mean_squared_error(y_val, preds)
+            mae_score = mean_absolute_error(y_val, preds)
             mae_scores.append(mae_score)
 
         return float(np.mean(mae_scores))
@@ -188,11 +205,37 @@ def cria_experimento(experiment_name):
         # Se o experimento não existir, cria um novo e retorna seu ID
         return mlflow.create_experiment(experiment_name)
     
+def _features_load(df: pd.DataFrame, target_col:str) -> Tuple[list, list, list]:
+    """
+    Carrega as features do DataFrame e validando com.
+
+    Args:
+        df: DataFrame original.
+    
+    """
+    df.drop(columns=['boi_dolar'], inplace=True)
+    cols = df.columns.tolist()
+    cols_flag = []
+    cols_float = []
+    cols_int = []
+
+    with open("C:/Users/Ricar/PROJETO_AGRO_GOIAS/PROJETO_01/ml-pipeline/feature_specs.json", "r") as f:
+        f_specs = json.load(f)
+
+    for col in cols:
+        if col != target_col:
+            if "flag" in str(col).lower():
+                cols_flag.append(col)
+            elif f_specs[col]["dtype"] == "float64":
+                cols_float.append(col)
+            elif (f_specs[col]["dtype"] == "int64" or f_specs[col]["dtype"] == "int32"):
+                cols_int.append(col)
+
+    return cols_flag, cols_float, cols_int
+    
 def train_pipeline(df: pd.DataFrame,
                    path: str,
                    target_col: str,
-                   feature_cols: Optional[list[str]] = None,
-                   cols_flags: Optional[list[str]] = None,
                    window_size: int = 60,
                    test_size: int = 60,
                    optuna_trails: int = 20,
@@ -209,13 +252,10 @@ def train_pipeline(df: pd.DataFrame,
     Returns:
         modelo final, previsões do teste.
     """
-    assert target_col in df.columns
+    
 
     # Seleciona features automaticamente
-    if feature_cols is None:
-        feature_cols = [c for c in df.columns if c != target_col]
-
-    cols = feature_cols + [target_col] + (cols_flags or [])
+    cols_flags, cols_float, cols_int = _features_load(df, "boi_negociado")
     cfg = PipelineConfig()
     cfg.interpolate = True
 
@@ -227,28 +267,27 @@ def train_pipeline(df: pd.DataFrame,
     train_norm, _ = normalize_time_series(
         isTrain=True,
         df=train_df,
-        cols=cols,
         cols_flags=cols_flags,
+        cols_float=cols_float,
+        cols_int=cols_int,
         config=cfg,
-        #artifact_dir="models"  # diretório preferido
-
     )
 
     # 3) Transform no TESTE usando history (últimos 'd' valores originais do treino por coluna)
     test_norm, _ = normalize_time_series(
         isTrain=False,
         df=test_df,
-        cols=cols,
         cols_flags=cols_flags,
+        cols_float=cols_float,
+        cols_int=cols_int,
         config=cfg,
-        #artifact_dir="models"
     )
-    print(test_norm.isna().sum())
+
     # Split
-    X_train_df = train_norm[[f"{c}_norm" for c in feature_cols + (cols_flags or [])]]
-    y_train_df = train_norm[f"{target_col}_norm"]
-    X_test_df = test_norm[[f"{c}_norm" for c in feature_cols + (cols_flags or [])]]
-    y_test_df = test_norm[f"{target_col}_norm"]
+    X_train_df = train_norm[[f"{c}_norm" for c in cols_flags + cols_float + cols_int]]
+    y_train_df = train_norm[f"{target_col}"]
+    X_test_df = test_norm[[f"{c}_norm" for c in cols_flags + cols_float + cols_int]]
+    y_test_df = test_norm[f"{target_col}"]
 
     # Criar janelas
     X_train_list, y_train_series = create_windowed_df(X_train_df, y_train_df, window_size)
@@ -269,6 +308,9 @@ def train_pipeline(df: pd.DataFrame,
         X_test_np = convert_windows_to_numpy(X_test_list)
         y_test_np = y_test_series.values
 
+        print("X std:", X_train_np.std())
+        print("X min/max:", X_train_np.min(), X_train_np.max())
+
         model = build_lstm_model(study.best_trial, window_size, X_train_np.shape[-1])
 
         def scheduler(epoch, lr):
@@ -282,17 +324,7 @@ def train_pipeline(df: pd.DataFrame,
                   batch_size=study.best_params.get("batch_size", 32),
                   callbacks=[LearningRateScheduler(scheduler)])
 
-        print(model.input_shape)       
-
         preds = model.predict(X_test_np).ravel()
-
-        y_pred_norm_df = pd.DataFrame({"boi_negociado_norm": preds}, index=test_norm.index[-len(preds):])
-
-        y_pred_inv = inverse_transform_column(
-            df_norm = y_pred_norm_df,
-            cols= [target_col],
-            start_values=train_df[[target_col]]
-        )
 
         # Métricas
         mae_score = mean_absolute_error(y_test_np, preds)
@@ -310,32 +342,30 @@ def train_pipeline(df: pd.DataFrame,
         # Gráfico final
         plt.figure(figsize=(10, 5))
         plt.plot(y_test_np, label="Real")
-        plt.plot(y_pred_inv, label="Prévia")
+        plt.plot(preds, label="Prévia")
         plt.legend()
         plt.title("Previsão vs Real (normalizado)")
         plt.tight_layout()
         plt.savefig("plot_norm_df.png")
         mlflow.log_artifact("plot_norm_df.png")
 
-    return model, y_pred_inv, (mae_score, mse_score, mape_score)
+    return model, preds[-1], (mae_score, mse_score, mape_score)
 
 
 caminho = Path(os.path.abspath(__file__))
 
 root_dir = caminho.parent.parent
-df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_rfe.csv')
-model_path = os.path.join(caminho.parent, 'models','model_lstm.h5')
+df_path = os.path.join(root_dir, 'data_pipeline' ,'sensors', 'dados_modelo_fs.csv')
+model_path = os.path.join(caminho.parent, 'models','model_lstm.keras')
 df_train = pd.read_csv(df_path, index_col=0, parse_dates=True)
-model, y_pred_inv, _ = train_pipeline(df=df_train, 
+model, y_pred, _ = train_pipeline(df=df_train, 
                                       path=model_path,
                                       target_col="boi_negociado",
-                                      feature_cols= ['dolar', 'milho_dolar', 'Taxa_EUA', 'ipca', 'el_nino_encoded'],
-                                      cols_flags = ['CovidPeriodFlag', 'festas_juninas_flag', 'sao_joao_flag', 'sao_pedro_flag', 'finados_weekend_flag'],
                                       optuna_trails=10,
-                                      window_size=90,
+                                      window_size=30,
                                       tscv_splits=3, 
                                       test_size=30)
 
-print(y_pred_inv)
+print(y_pred)
 
 # Taxa_EUA,milho_dolar,dolar,CovidPeriodFlag,festas_juninas_flag,sao_joao_flag,sao_pedro_flag,finados_weekend_flag,ipca,el_nino_encoded,boi_negociado

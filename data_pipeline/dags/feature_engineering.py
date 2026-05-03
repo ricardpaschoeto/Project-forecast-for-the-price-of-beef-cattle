@@ -1,17 +1,24 @@
 # feature_engineering.py
 from __future__ import annotations
 from dataclasses import dataclass
+from itertools import groupby
 from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
-from sklearn.ensemble import HistGradientBoostingRegressor
 
 from sklearn.datasets import make_regression
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.feature_selection import RFE
+from sklearn.feature_selection import mutual_info_regression
+
+from sklearn.linear_model import ElasticNet
+from sklearn.preprocessing import StandardScaler
+
+from xgboost import XGBRegressor
+
 import pandas as pd
 
 
@@ -106,37 +113,124 @@ class FeatureSelection():
         self.X = df.drop(columns=[target_col])
         self.feature_names = self.X.columns
 
-    def select_features(self):
-        model_lr = LinearRegression()
-        rfe = RFE(estimator=model_lr, n_features_to_select=10)
-        rfe.fit(self.X, self.y)
+    def _create_lagged_features(self, lags=12):
+        X_lagged = pd.concat(
+            [
+                self.X.shift(lag).add_suffix(f"_lag{lag}") for lag in range(1, lags + 1)
+            ],
+            axis=1
+        )
 
-        selected_rfe = [self.feature_names[i] for i in range(self.X.shape[1]) if rfe.support_[i]]
+        X_lagged = X_lagged.dropna()
+        y_aligned = self.y.iloc[lags:]
 
-        return selected_rfe
+        return X_lagged, y_aligned
+    
+    def temporal_mi_selection(self, lags=12, top_k=30):
+        X_lagged, y_lagged = self._create_lagged_features(lags)
+        mi = mutual_info_regression(X_lagged, y_lagged)
+        mi_series = pd.Series(mi, index=X_lagged.columns)
 
-    # 3. Aplicar Lasso para seleção de atributos
-    def lasso_selection(self):
-        model_lasso = Lasso(alpha=0.4)
-        model_lasso.fit(self.X, self.y)
+        # Agrupar MI por feature original
+        grouped_mi = mi_series.groupby(
+            lambda x: x.split("_lag")[0]
+            ).sum()
 
-        selected_lasso = [self.feature_names[i] for i, coef in enumerate(model_lasso.coef_) if coef != 0]
+        return grouped_mi.sort_values(ascending=False).head(top_k).index.tolist()  # Retorna os nomes das top k features
+    
+    def temporal_xgb_selection(self, lags=12, top_k=20):
+        X_lagged, y_lagged = self._create_lagged_features(lags)
 
-        return selected_lasso
+        xgb = XGBRegressor(
+            n_estimators=500, 
+            max_depth=6, 
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=-1
+        )
 
-    # Exibir resultados
-    def display_selected_features(self):
-        selected_rfe = self.select_features()
-        selected_lasso = self.lasso_selection()
+        xgb.fit(X_lagged, y_lagged)
 
-        print("=== Seleção de Atributos com RFE ===")
-        print(f"Features selecionadas pelo RFE: {selected_rfe}\n")
+        importances = pd.Series(
+            xgb.feature_importances_,
+              index=X_lagged.columns
+            )
 
-        print("=== Seleção de Atributos com Lasso ===")
-        print(f"Features selecionadas pelo Lasso: {selected_lasso}\n")
+        # Agrupar importância por feature original
+        grouped_importance = (
+            importances
+            .groupby(lambda col: col.split("_lag")[0])
+            .sum()
+        )
 
-        return selected_rfe, selected_lasso
+        return (
+                grouped_importance
+                .sort_values(ascending=False)
+                .head(top_k)
+                .index
+                .tolist()
+          )  # Retorna os nomes das top k features
+    
+    def temporal_elasticnet_selection(self, lags=12):
+        X_lagged, y_lagged = self._create_lagged_features(lags)
 
+        X_scaled = StandardScaler().fit_transform(X_lagged)
+
+        model = ElasticNet(
+            alpha=0.05,
+            l1_ratio=0.5,
+            random_state=42
+        )
+
+        model.fit(X_scaled, y_lagged)
+
+        coefs = pd.Series(model.coef_, index=X_lagged.columns)
+
+        # Agrupar coeficientes por feature original
+        grouped = coefs.abs().groupby(
+            lambda x: x.split("_lag")[0]
+            ).sum()
+
+        return grouped[grouped > 0].index.tolist()
+    
+    def temporal_consensus_selection(self, lags=12, min_votes=2, top_n=None):
+        
+        methods = {
+            "mi": self.temporal_mi_selection(lags=lags, top_k=30),
+            "xgb": self.temporal_xgb_selection(lags=lags, top_k=20),
+            "enet": self.temporal_elasticnet_selection(lags=lags),
+        }
+
+        votes = {}
+
+        for feature_list in methods.values():
+            for f in feature_list:
+                votes[f] = votes.get(f, 0) + 1
+
+        votes_ordered = dict(
+            sorted(
+                votes.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+        )        
+
+        filtered = [
+            f for f, count in votes_ordered.items() 
+            if count >= min_votes
+        ]
+
+        if top_n is not None:
+            filtered = filtered[:top_n]
+
+        return filtered, votes_ordered
+    
+    def print_features(self, features: List[str], votes: Dict[str, int]):
+        print(f"Features selecionadas ({len(features)}):")
+        for f in features:
+            print(f"{f} - {votes.get(f, 0)} votos")
 
 # ==========================================
 # 2) FUNÇÃO PRINCIPAL: make_pipeline(conf)

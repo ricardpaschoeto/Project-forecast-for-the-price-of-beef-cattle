@@ -515,7 +515,7 @@ with tab_dashboard:
     # FIGURA 1 — Predição One-Step via API
     # ================================
        
-    if run_forecast:
+    if True:
         scenario_df, scenario_dict = _test_create_predict_data(scenario)
         req = PredictRequest(date=data_prev, scenario=scenario_dict)
         res = _predict(req)
