@@ -32,6 +32,7 @@ config/settings.yaml
 *.txt
 *.joblib
 *.json
+*.nc
 
 "notebooks/*.csv"
 "notebooks/*.ipynb"

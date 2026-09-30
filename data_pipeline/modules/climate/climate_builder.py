@@ -2,7 +2,7 @@ import datetime as dt
 import pandas as pd
 import numpy as np
 
-from modules.climate.inmet_api import get_inmet_precip_temp
+from modules.climate.inmet_api import get_openmeteo_daily
 from modules.climate.terraclimate_api import get_terraclimate_scpdsi
 from modules.climate.noaa_api import get_noaa_oni
 
@@ -15,7 +15,7 @@ def get_climate_data(
     terraclimate_scpdsi_nc: str,
 ) -> pd.DataFrame:
 
-    df_inmet = get_inmet_precip_temp(start, end, estacoes_inmet)
+    df_inmet = get_openmeteo_daily(start, end, estacoes_inmet)
     df_scpdsi = get_terraclimate_scpdsi(start, end, terraclimate_bbox, terraclimate_scpdsi_nc)
     df_elnino = get_noaa_oni(start, end)
 
