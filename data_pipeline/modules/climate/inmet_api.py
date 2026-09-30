@@ -1,86 +1,61 @@
 import datetime as dt
 import pandas as pd
-import numpy as np
 import requests
 
 
-def get_inmet_daily_station(cod_estacao: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+def get_openmeteo_daily(
+    latitude: float,
+    longitude: float,
+    start: dt.date,
+    end: dt.date,
+) -> pd.DataFrame:
     """
-    Retorna dados diários da estação INMET:
+    Retorna dados diários do Open-Meteo:
     precip, tmin, tmax, tmed.
     """
 
-    url = (
-        f"https://https://tempo.inmet.gov.br/estacao/diaria/"
-        f"{start.strftime('%Y-%m-%d')}/"
-        f"{end.strftime('%Y-%m-%d')}/"
-        f"{cod_estacao}"
-    )
+    url = "https://archive-api.open-meteo.com/v1/archive"
 
-    resp = requests.get(url, timeout=30)
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start.strftime("%Y-%m-%d"),
+        "end_date": end.strftime("%Y-%m-%d"),
+        "daily": [
+           "temperature_2m_mean",
+        ],
+        "timezone": "America/Sao_Paulo",
+    }
+
+    resp = requests.get(url, params=params, timeout=60)
     resp.raise_for_status()
+
     data = resp.json()
 
-    if not data:
+    if "daily" not in data:
         return pd.DataFrame()
 
-    df = pd.DataFrame(data)
+    daily = data["daily"]
 
-    df["date"] = pd.to_datetime(df["DT_MEDICAO"]).dt.date
-    df = df.set_index("date")
+    df = pd.DataFrame({
+        "date": pd.to_datetime(daily["time"]),
+        "tmed": daily["temperature_2m_mean"],
+    })
 
-    precip_col = "CHUVA" if "CHUVA" in df.columns else ("PREC" if "PREC" in df.columns else None)
-    if precip_col is None:
-        raise ValueError("Coluna de precipitação não encontrada no retorno INMET.")
+    df.set_index("date", inplace=True)
 
-    df["precip"] = pd.to_numeric(df[precip_col], errors="coerce")
-    df["tmin"] = pd.to_numeric(df.get("TMIN", np.nan), errors="coerce")
-    df["tmax"] = pd.to_numeric(df.get("TMAX", np.nan), errors="coerce")
+    return df
 
-    if "T_MED" in df.columns:
-        df["tmed"] = pd.to_numeric(df["T_MED"], errors="coerce")
-    else:
-        df["tmed"] = (df["tmin"] + df["tmax"]) / 2.0
+def main():
 
-    return df[["precip", "tmin", "tmax", "tmed"]]
+    latitude = -16.6869
+    longitude = -49.2648
+    start = dt.date(2026, 9, 1)
+    end = dt.date(2026, 9, 29)
 
+    df = get_openmeteo_daily(latitude, longitude, start, end)
+    print(df)
 
-def get_inmet_precip_temp(start: dt.date, end: dt.date, estacoes: list[str]) -> pd.DataFrame:
-    """
-    Agrega várias estações INMET, retornando:
-    precip_total_mm, TEMPERATURA (média tmed).
-    """
-    frames = []
-
-    for cod in estacoes:
-        df_est = get_inmet_daily_station(cod, start, end)
-        if df_est.empty:
-            continue
-
-        idx = pd.date_range(start=start, end=end, freq="D")
-        df_est = df_est.reindex(idx)
-        df_est.index.name = "date"
-        frames.append(df_est)
-
-    idx = pd.date_range(start=start, end=end, freq="D")
-
-    if not frames:
-        df = pd.DataFrame(index=idx, columns=["precip_total_mm", "TEMPERATURA"])
-        return df
-
-    panel = pd.concat(frames, axis=0, keys=estacoes, names=["estacao", "date"])
-    daily = panel.groupby("date").mean()
-
-    daily.rename(
-        columns={
-            "precip": "precip_total_mm",
-            "tmed": "TEMPERATURA",
-        },
-        inplace=True,
-    )
-
-    daily = daily.reindex(idx)
-    daily.index.name = "date"
-
-    return daily[["precip_total_mm", "TEMPERATURA"]]
+if __name__ == "__main__":
+    main()
 

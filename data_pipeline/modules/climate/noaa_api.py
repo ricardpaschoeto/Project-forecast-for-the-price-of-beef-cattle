@@ -28,3 +28,12 @@ def get_noaa_oni(start: dt.date, end: dt.date) -> pd.DataFrame:
     df_daily.rename(columns={"oni": "el nino"}, inplace=True)
 
     return df_daily[["el nino"]]
+
+def main():
+    start = dt.date(2026, 9, 1)
+    end = dt.date(2026, 9, 30)
+    df = get_noaa_oni(start, end)
+    print(df)
+
+if __name__ == "__main__":
+    main()
