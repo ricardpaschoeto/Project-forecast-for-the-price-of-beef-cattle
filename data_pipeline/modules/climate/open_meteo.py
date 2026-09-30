@@ -25,3 +25,16 @@ def get_precipitation(lat, lon, start_date, end_date):
     })
 
     return df.set_index("date")
+
+def main():
+    # Example usage
+    lat = -15.7801  # Latitude for Brasília, Brazil
+    lon = -47.9292  # Longitude for Brasília, Brazil
+    start_date = "2026-09-01"
+    end_date = "2026-09-30"
+
+    df_precipitation = get_precipitation(lat, lon, start_date, end_date)
+    print(df_precipitation)
+
+if __name__ == "__main__":
+    main()
