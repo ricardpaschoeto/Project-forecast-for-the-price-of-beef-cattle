@@ -9,18 +9,26 @@ Expõe as principais funções do submódulo climate:
 """
 
 from .inmet_api import (
-    get_inmet_daily_station,
-    get_inmet_precip_temp,
+    InmetClient,
+    get_openmeteo_daily,
 )
 
 from .terraclimate_api import (
+    TerraClimateClient,
     get_terraclimate_scpdsi,
 )
 
 from .noaa_api import (
+    NoaaClient,
     get_noaa_oni,
 )
 
+from .open_meteo_api import (
+    OpenMeteoClient,
+    get_precipitation,
+)
+
 from .climate_builder import (
+    ClimateBuilder,
     get_climate_data,
 )

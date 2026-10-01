@@ -1,33 +1,16 @@
 import io
 import datetime as dt
+from typing import Any
+
 import pandas as pd
 import requests
 
 
-def get_noaa_oni(start: dt.date, end: dt.date) -> pd.DataFrame:
-    """
-    Retorna o índice ONI (El Niño) diário utilizando
-    forward-fill do último valor disponível.
-    """
+class NoaaClient:
+    """Cliente para consultar e preparar o índice ONI da NOAA."""
 
-    url = "https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt"
-
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-
-    df = pd.read_fwf(io.StringIO(resp.text), header=None)
-
-    df.columns = ["season", "year", "total", "oni"]
-
-    # Remove linha de cabeçalho presente nos dados
-    df = df[df["year"] != "YR"].copy()
-
-    df["season"] = df["season"].astype(str).str.strip()
-
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
-    df["oni"] = pd.to_numeric(df["oni"], errors="coerce")
-
-    season_map = {
+    _URL = "https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt"
+    _SEASON_MONTHS = {
         "DJF": 1,
         "JFM": 2,
         "FMA": 3,
@@ -42,58 +25,73 @@ def get_noaa_oni(start: dt.date, end: dt.date) -> pd.DataFrame:
         "NDJ": 12,
     }
 
-    df["month"] = df["season"].map(season_map)
+    def __init__(self, http_client: Any = requests) -> None:
+        self.http_client = http_client
 
-    df = df.dropna(subset=["year", "month", "oni"])
+    def get_oni(self, start: dt.date, end: dt.date) -> pd.DataFrame:
+        """Retorna o índice ONI diário para o período solicitado."""
+        if start > end:
+            raise ValueError("A data inicial deve ser anterior à data final.")
 
-    df["date"] = pd.to_datetime(
-        {
-            "year": df["year"].astype(int),
-            "month": df["month"].astype(int),
-            "day": 15,
-        }
-    )
+        data = self._fetch_data()
+        return self._to_daily_dataframe(data, start, end)
 
-    df = (
-        df[["date", "oni"]]
-        .set_index("date")
-        .sort_index()
-    )
+    def _fetch_data(self) -> str:
+        response = self.http_client.get(self._URL, timeout=30)
+        response.raise_for_status()
+        return response.text
 
-    last_available = df.index.max()
+    def _parse_data(self, content: str) -> pd.DataFrame:
+        data = pd.read_csv(
+            io.StringIO(content),
+            sep=r"\s+",
+            header=None,
+            names=["season", "year", "total", "oni"],
+        )
+        data = data[data["year"] != "YR"].copy()
+        data["season"] = data["season"].astype(str).str.strip()
+        data["year"] = pd.to_numeric(data["year"], errors="coerce")
+        data["oni"] = pd.to_numeric(data["oni"], errors="coerce")
+        data["month"] = data["season"].map(self._SEASON_MONTHS)
+        data = data.dropna(subset=["year", "month", "oni"])
+        data["date"] = pd.to_datetime(
+            {
+                "year": data["year"].astype(int),
+                "month": data["month"].astype(int),
+                "day": 15,
+            }
+        )
+        return data[["date", "oni"]].set_index("date").sort_index()
 
-    print(f"Última data disponível NOAA: {last_available:%Y-%m-%d}")
+    def _to_daily_dataframe(
+        self,
+        content: str,
+        start: dt.date,
+        end: dt.date,
+    ) -> pd.DataFrame:
+        data = self._parse_data(content)
+        last_available = data.index.max()
+        print(f"Última data disponível NOAA: {last_available:%Y-%m-%d}")
 
-    # Gera série diária completa
-    daily_index = pd.date_range(
-        start=df.index.min(),
-        end=max(pd.Timestamp(end), last_available),
-        freq="D",
-    )
+        daily_index = pd.date_range(
+            start=data.index.min(),
+            end=max(pd.Timestamp(end), last_available),
+            freq="D",
+        )
+        daily = data.resample("D").ffill().reindex(daily_index).ffill()
+        result = daily.loc[pd.Timestamp(start):pd.Timestamp(end)].copy()
+        result.index.name = "date"
+        return result.rename(columns={"oni": "el_nino"})[["el_nino"]]
 
-    df_daily = (
-        df.resample("D")
-          .ffill()
-          .reindex(daily_index)
-          .ffill()
-    )
 
-    # Seleciona apenas o período solicitado
-    df_daily = df_daily.loc[pd.Timestamp(start):pd.Timestamp(end)]
-
-    df_daily.index.name = "date"
-
-    df_daily.rename(
-        columns={"oni": "el_nino"},
-        inplace=True
-    )
-
-    return df_daily[["el_nino"]]
+def get_noaa_oni(start: dt.date, end: dt.date) -> pd.DataFrame:
+    """Mantém a API funcional usada pelo pipeline de clima."""
+    return NoaaClient().get_oni(start, end)
 
 
 def main():
-    start = dt.date(2026, 9, 1)
-    end = dt.date(2026, 9, 30)
+    start = dt.date(2020, 1, 1)
+    end = dt.date(2026, 1, 10)
 
     df = get_noaa_oni(start, end)
 
